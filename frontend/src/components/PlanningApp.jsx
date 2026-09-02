@@ -3,23 +3,18 @@ import { flushSync } from 'react-dom';
 import { api } from '../api/client';
 import { emit, emitError } from '../lib/telemetry';
 import { loadAllDataRows } from '../utils/planTransform';
-import { preloadFillers } from '../lib/instantFiller';
+import '../styles/copilot-v4.css';
 import '../styles/app.css';
-import { buildScenarioSteps, SCENARIOS } from '../data/scenarios';
 import { f2, hm } from '../utils/format';
 import { useScenarioEngine } from '../hooks/useScenarioEngine';
-import { useConcierge } from '../hooks/useConcierge';
-import { useVoice } from '../hooks/useVoice';
-import { useAgentWebSocket } from '../hooks/useAgentWebSocket';
-import { useWelcomeMessage } from '../hooks/useWelcomeMessage';
+import { usePortfolioRecommendations } from '../hooks/usePortfolioRecommendations';
 import AgentCursor from './AgentCursor';
-import AgentAvatar from './AgentAvatar';
-import PlanSearchBar from './PlanSearchBar';
-import { filterPlans, matchesPlanSearch } from '../utils/planSearch';
-import ConciergeNudgePanel from './ConciergeNudgePanel';
-import PlanTabs, { TAB_LABELS, tabsForPlan } from './plan/PlanTabs';
+import PlanTabs, { tabsForPlan } from './plan/PlanTabs';
 import PortfolioLanding from './PortfolioLanding';
+import PlanRail from './PlanRail';
 import CreatePlanPanel from './CreatePlanPanel';
+import v4DnLogo from '../assets/v4DnLogo.js';
+import { filterPlans, matchesPlanSearch } from '../utils/planSearch';
 import { computeXutil, defaultOtWeekly, fwdCount, hireTiming, planRecWithWeekly, scaleDonorsToXu } from '../utils/planLogic';
 import {
   EMPTY_CREATE_PLAN_DRAFT,
@@ -27,9 +22,16 @@ import {
   createPlanPayload,
   nextCreatePlanField,
 } from '../utils/createPlanFields';
-import { HUE } from '../hooks/scenarioActions';
 
-const SHOW_SCENARIO_REPLAY = false;
+const WORKFLOW_STEPS = [
+  { key: 'ov', label: 'Overview' },
+  { key: 'shr', label: 'Shrinkage' },
+  { key: 'att', label: 'Attrition' },
+  { key: 'fw', label: 'Forecast' },
+  { key: 'hc', label: 'Headcount' },
+  { key: 'rec', label: 'Recommend' },
+  { key: 'exe', label: 'Execute' },
+];
 
 function buildStaffingPackage(plan, capId, planDecisions, otWeeksByCap, allPlans) {
   const ovr = planDecisions[capId]?.recOvr || {};
@@ -131,26 +133,24 @@ function mergeAttrWeeks(plan, prev, dirty) {
   return next.map((w) => (curByIdx.has(w.weekIdx) ? { ...w, cur: curByIdx.get(w.weekIdx) } : w));
 }
 
-export default function PlanningApp({ logoSrc }) {
+export default function PlanningApp() {
   const workspaceRef = useRef(null);
   const domHandlersRef = useRef({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [data, setData] = useState([]);
   const [triage, setTriage] = useState({ dec: [], auto: [], quiet: [] });
   const [programs, setPrograms] = useState([]);
   const [cycleLabel, setCycleLabel] = useState('Week of Aug 02, 2026');
   const [ledger, setLedger] = useState([]);
   const [memories, setMemories] = useState([]);
-  const [streamMode, setStreamMode] = useState(false);
-  const [wsStepLabel, setWsStepLabel] = useState('Ready');
-  const [chatInput, setChatInput] = useState('');
-  const [chatFile, setChatFile] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [portRegion, setPortRegion] = useState('');
+  const [portVertical, setPortVertical] = useState('');
+  const [portStatus, setPortStatus] = useState('');
   const [planDecisions, setPlanDecisions] = useState({});
   const [otWeeksByCap, setOtWeeksByCap] = useState({});
   const paneRef = useRef(null);
-  const chatTimelineRef = useRef(null);
-  const chatFileRef = useRef(null);
   const stateRef = useRef(null);
 
   const [state, setState] = useState({
@@ -205,53 +205,8 @@ export default function PlanningApp({ logoSrc }) {
 
   const engine = useScenarioEngine(state, setState, { workspaceRef, domHandlersRef });
 
-  const concierge = useConcierge({
-    actionsRef: engine.actionsRef,
-    stateRef,
-    setState,
-    isHumanActive: engine.isHumanActive,
-    pushRef: engine.pushRef,
-    enabled: !loading,
-  });
-
-  const ws = useAgentWebSocket({
-    actionsRef: engine.actionsRef,
-    onStep: (ev) => {
-      if (ev.type === 'step_begin') {
-        engine.setStepFromStream(ev.index);
-        setWsStepLabel(ev.label || 'Running');
-      }
-      if (ev.type === 'start') setWsStepLabel('Starting…');
-    },
-    onComplete: () => {
-      engine.setStepFromStream(0, true);
-      setWsStepLabel('Complete');
-    },
-    onError: (msg) => {
-      engine.pushRef.current?.('d', 'Stream', msg || 'WebSocket error');
-    },
-  });
-
-  const voice = useVoice({
-    actionsRef: engine.actionsRef,
-    stateRef,
-    setState,
-    pushRef: engine.pushRef,
-    isHumanActive: engine.isHumanActive,
-  });
-
-  useWelcomeMessage({
-    enabled: !loading,
-    cycleLabel,
-    triage,
-    pushRef: engine.pushRef,
-    setState,
-    stateRef,
-    speakText: voice.speakText,
-    voiceBusy: voice.voiceBusy,
-    streamMode,
-    scenarioPlaying: engine.playing,
-  });
+  const portfolioCapIds = useMemo(() => data.map((p) => p.capId), [data]);
+  const portfolioRecs = usePortfolioRecommendations({ enabled: !loading && portfolioCapIds.length > 0, capIds: portfolioCapIds });
 
   const matchesSearch = useCallback((item) => matchesPlanSearch(item, searchQuery), [searchQuery]);
 
@@ -286,6 +241,7 @@ export default function PlanningApp({ logoSrc }) {
       setTriage(tri);
       setPrograms(progs);
       setCycleLabel(cycle.week_label);
+      setLoadError(null);
       setState((s) => ({
         ...s,
         packages: (pkg || []).map((p) => {
@@ -317,18 +273,10 @@ export default function PlanningApp({ logoSrc }) {
   }, [loading, state.activePlan, state.activeTab, state.view, state.filter]);
 
   useEffect(() => {
-    if (loading || state.view !== 'plan' || !state.activePlan) return undefined;
-    const t1 = setTimeout(() => concierge.refresh(), 400);
-    const t2 = setTimeout(() => concierge.refresh(), 2500);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [loading, state.view, state.activePlan, concierge.refresh]);
-
-  useEffect(() => {
-    void preloadFillers();
-  }, []);
+    if (loading) return undefined;
+    portfolioRecs.refresh();
+    return undefined;
+  }, [loading, state.view, state.activePlan, portfolioRecs.refresh]);
 
   useEffect(() => {
     (async () => {
@@ -348,6 +296,7 @@ export default function PlanningApp({ logoSrc }) {
         setCycleLabel(cycle.week_label);
         setLedger(led.entries || []);
         setMemories(mem);
+        setLoadError(null);
         setState((s) => ({
           ...s,
           packages: (pkg || []).map((p) => ({ ...p, ticked: false, done: false })),
@@ -362,6 +311,7 @@ export default function PlanningApp({ logoSrc }) {
         }));
       } catch (e) {
         console.error(e);
+        setLoadError(e?.message || 'Could not load portfolio from API. Is the backend running on port 8077?');
       } finally {
         setLoading(false);
       }
@@ -393,40 +343,11 @@ export default function PlanningApp({ logoSrc }) {
     }));
   }, [state.activePlan, data]);
 
-  const chatScrollSig = useMemo(() => {
-    const last = state.messages[state.messages.length - 1];
-    return `${state.messages.length}:${last?.text ?? ''}:${state.bubble}:${state.agentTalk}:${state.agentHear}`;
-  }, [state.messages, state.bubble, state.agentTalk, state.agentHear]);
-
-  useEffect(() => {
-    const tl = chatTimelineRef.current;
-    if (!tl) return;
-    const scrollToBottom = () => {
-      tl.scrollTop = tl.scrollHeight;
-    };
-    scrollToBottom();
-    requestAnimationFrame(scrollToBottom);
-  }, [chatScrollSig]);
-
   useEffect(() => {
     if (paneRef.current) paneRef.current.scrollTop = 0;
   }, [state.view, state.filter]);
 
   const activePlan = useMemo(() => data.find((p) => p.capId === state.activePlan), [data, state.activePlan]);
-
-  const filteredDec = useMemo(
-    () => (triage.dec?.filter((p) => (state.filter === 'all' || p.program === state.filter) && matchesSearch(p)) || []),
-    [triage.dec, state.filter, matchesSearch],
-  );
-  const filteredAuto = useMemo(
-    () => (triage.auto?.filter((p) => (state.filter === 'all' || p.program === state.filter) && matchesSearch(p)) || []),
-    [triage.auto, state.filter, matchesSearch],
-  );
-  const filteredQuiet = useMemo(
-    () => (triage.quiet?.filter((p) => (state.filter === 'all' || p.program === state.filter) && matchesSearch(p)) || []),
-    [triage.quiet, state.filter, matchesSearch],
-  );
-  const showing = filteredData.length;
 
   const setEditorWeek = (k, v) => {
     setState((s) => {
@@ -1111,18 +1032,6 @@ export default function PlanningApp({ logoSrc }) {
     }));
   };
 
-  const crumb = {
-    port: ['Portfolio — grouped by Program', `${data.length} plans`],
-    plan: ['CP FTE Based · detailed analysis', state.activePlan],
-    queue: ['Review & execute', 'action queue'],
-    time: ['Time & memory', 'ledger'],
-  }[state.view] || ['Portfolio — grouped by Program', '11 plans'];
-
-  const steps = buildScenarioSteps(SCENARIOS[engine.scenarioIdx]?.key, {});
-  const localStepLabel =
-    engine.stepIdx >= engine.stepCount ? 'Complete' : engine.stepIdx === 0 ? 'Ready' : steps[engine.stepIdx - 1]?.l || 'Ready';
-  const stepLabel = streamMode ? wsStepLabel : localStepLabel;
-
   const ticked = state.packages.filter((p) => p.ticked);
   const qOT = ticked.reduce((a, p) => a + (p.ot_hrs || 0), 0);
   const qXU = ticked.reduce((a, p) => a + (p.xu_fte || 0), 0);
@@ -1130,21 +1039,6 @@ export default function PlanningApp({ logoSrc }) {
   const qOTn = ticked.filter((p) => p.ot_hrs > 0).length;
   const qXUn = ticked.filter((p) => p.xu_fte > 0).length;
   const qHRn = ticked.filter((p) => p.hire_count > 0).length;
-
-  const handlePlay = async () => {
-    if (streamMode) {
-      if (ws.streaming) {
-        ws.stopScenario();
-        engine.setStepFromStream(engine.stepIdx, false);
-        return;
-      }
-      engine.reset();
-      setWsStepLabel('Starting…');
-      await ws.startScenario(engine.scenarioIdx, engine.speed);
-      return;
-    }
-    engine.toggle();
-  };
 
   const handleTabClick = (k) => {
     emit('tab.changed', { metadata: { cap_id: state.activePlan, active_tab: k, view: 'plan' } });
@@ -1157,444 +1051,344 @@ export default function PlanningApp({ logoSrc }) {
 
   if (loading) {
     return (
-      <div className="app-shell">
+      <div className="copilot-app">
         <div className="app-loading">Loading portfolio from database…</div>
       </div>
     );
   }
 
-  return (
-    <div className="app-shell">
-      <header className="top">
-        <div className="top-in">
-          <img className="logo" alt="Datanitiv" src={logoSrc} />
-          <span className="tg">CAP-ABILITY · Planning agent</span>
-          <span className="lv"><i></i>{cycleLabel}</span>
-        </div>
-      </header>
+  const isLanding = state.view === 'port';
+  const xutil = computeXutil(data);
 
-      <main className="app-main">
-        <div className="console" id="console">
-            {SHOW_SCENARIO_REPLAY ? (
-            <div className="scnbar" id="scnbar">
-              {engine.SCENARIOS.map((s, i) => (
-                <button key={s.key} type="button" className={`scn ${engine.scenarioIdx === i ? 'on' : ''}`} onClick={() => engine.pickScenario(i)}>
-                  <kbd>{i + 1}</kbd>{s.t}
-                </button>
-              ))}
+  return (
+    <div className="copilot-app">
+      <div className="topbar">
+        <div className="logo">
+          <img className="dn-logo" alt="" src={v4DnLogo} />
+        </div>
+        <div className="brandname">
+          CAP-<b>ABILITY</b>
+        </div>
+        <div className="crumbs" style={{ marginLeft: 6 }}>
+          <span>Planning Workspace</span>
+          <span className="sep">›</span>
+          <span>1OS World</span>
+          <span className="sep">›</span>
+          <span className="cur">Planning Co-Pilot</span>
+        </div>
+        <div className="spacer" />
+        <div className="plchip">
+          <span className="dot" />
+          Multi-plan · {cycleLabel}
+        </div>
+        <div className="iconbtn" aria-hidden>
+          🔍
+        </div>
+        <div className="avatar" aria-hidden>
+          MS
+        </div>
+      </div>
+
+      <main className="copilot-main">
+        <div className="wrap" style={{ maxWidth: 1320 }}>
+          {loadError ? (
+            <div className="insight neg" style={{ marginBottom: 14 }}>
+              <div className="ico">!</div>
+              <div className="tx">
+                <b>Backend connection failed.</b> {loadError}
+                <small>Start the API from the backend folder: uvicorn app.main:app --reload --port 8077</small>
+              </div>
             </div>
+          ) : null}
+          {isLanding ? (
+            <div className="pilot-head">
+              <div className="pilot-badge">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path
+                    d="M12 3l1.6 4.9H19l-4 3 1.5 4.9-4.5-3-4.5 3L9 10.9l-4-3h5.4L12 3z"
+                    fill="#f5a623"
+                  />
+                </svg>
+              </div>
+              <div>
+                <h1>Planning Co-Pilot</h1>
+                <p>
+                  A card per CAP plan with its 12-week outlook · week of <b>{cycleLabel.replace(/^Week of /i, '')}</b> ·
+                  click a card to open the plan&apos;s full guided analysis.
+                </p>
+              </div>
+              <div className="live">
+                <span className="pulse" />
+                Co-Pilot active
+              </div>
+            </div>
+          ) : null}
+
+          {!isLanding ? (
+            <div id="backbar" className="backbar-v4">
+              <div className="bc-left">
+                <button
+                  type="button"
+                  className="btn-back"
+                  onClick={() => {
+                    engine.markHumanActive();
+                    domHandlersRef.current.view?.('port');
+                  }}
+                >
+                  ← All plans
+                </button>
+                {activePlan ? (
+                  <span className="bc-plan">
+                    <span className="capchip">{activePlan.capId}</span> <b>{activePlan.plan}</b>{' '}
+                    <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>· detailed analysis</span>
+                  </span>
+                ) : null}
+              </div>
+              <div className="mini-stepper">
+                {WORKFLOW_STEPS.filter((s) => !activePlan || tabsForPlan(activePlan).includes(s.key)).map((s, i, arr) => {
+                  const tabIdx = arr.findIndex((x) => x.key === state.activeTab);
+                  const thisIdx = arr.findIndex((x) => x.key === s.key);
+                  const done = thisIdx < tabIdx;
+                  const active = s.key === state.activeTab;
+                  return (
+                    <span key={s.key} style={{ display: 'contents' }}>
+                      <button
+                        type="button"
+                        className={`ms-step ${done ? 'done' : ''} ${active ? 'active' : ''}`}
+                        onClick={() => {
+                          engine.markHumanActive();
+                          handleTabClick(s.key);
+                          setState((st) => ({ ...st, view: 'plan' }));
+                        }}
+                      >
+                        <span className="num">{i + 1}</span>
+                        <span className="lbl">{s.label}</span>
+                      </button>
+                      {i < arr.length - 1 ? <span className="ms-conn" /> : null}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          <div className={`appgrid ${isLanding ? 'landing' : 'workflow'}`}>
+            {!isLanding ? (
+              <PlanRail
+                plans={filteredData}
+                activeCapId={state.activePlan}
+                onSelectPlan={(capId) => {
+                  engine.markHumanActive();
+                  domHandlersRef.current.openPlan?.(capId);
+                }}
+                onBackToPortfolio={() => {
+                  engine.markHumanActive();
+                  domHandlersRef.current.view?.('port');
+                }}
+              />
             ) : null}
 
             <div
-              className="ws human"
-              id="ws"
+              className="stage-v4"
               ref={workspaceRef}
               onPointerDownCapture={() => engine.markHumanActive()}
               onKeyDownCapture={() => engine.markHumanActive()}
             >
               <AgentCursor cursor={engine.cursor} />
-              <ConciergeNudgePanel
-                nudges={concierge.nudges}
-                onShowMe={concierge.acceptAndGuide}
-                onDismiss={concierge.dismissNudge}
-                onSnooze={concierge.snoozeNudge}
-              />
-              <div id="wsIn">
-                <div className="wtop">
-                  <span className="crumb"><b id="crumbTxt">{crumb[0]}</b></span>
-                  <span className="pill" id="crumbPill">{crumb[1]}</span>
-                  <div className="navviews">
-                    {[
-                      ['port', 'Portfolio'],
-                      ['queue', 'Queue'],
-                      ['time', 'Time'],
-                    ].map(([v, label]) => (
-                      <span
-                        key={v}
-                        className={state.view === v ? 'on' : ''}
-                        data-view={v}
-                        onClick={() => {
-                          engine.markHumanActive();
-                          domHandlersRef.current.view?.(v);
-                        }}
-                      >
-                        {label}
-                      </span>
-                    ))}
-                  </div>
-                  <span className="ctrl">◉ You have the mouse</span>
-                  <span className={`saved ${state.savedBump ? 'bump' : ''}`} id="savedChip">⏱ <span id="saveTxt">{hm(state.savedMin)} saved</span></span>
-                </div>
 
-                <div className="filters">
-                  <span
-                    className={`sel ${state.filter === 'all' ? 'on' : ''}`}
-                    data-filter="all"
-                    onClick={() => {
-                      engine.markHumanActive();
-                      setState((s) => ({ ...s, filter: 'all' }));
+              <CreatePlanPanel
+                open={state.createPlan.open}
+                draft={state.createPlan.draft}
+                agentMode={state.createPlan.agentMode}
+                highlightField={state.createPlan.highlightField}
+                openSelect={state.createPlan.openSelect}
+                busy={state.createPlan.busy}
+                error={state.createPlan.error}
+                programOptions={programs}
+                onChange={(key, val) => setCreatePlanField(key, val)}
+                onSubmit={submitCreatePlan}
+                onClose={closeCreatePlan}
+              />
+
+              <div className="stage-body" ref={paneRef}>
+                {state.view === 'port' && (
+                  <PortfolioLanding
+                    plans={filteredData}
+                    programs={programs}
+                    filter={state.filter}
+                    search={searchQuery}
+                    region={portRegion}
+                    vertical={portVertical}
+                    statusFilter={portStatus}
+                    recsByCap={portfolioRecs.byCap}
+                    packages={state.packages}
+                    gotBy={xutil.gotBy}
+                    onFilterChange={(patch) => {
+                      if (patch.search != null) setSearchQuery(patch.search);
+                      if (patch.region != null) setPortRegion(patch.region);
+                      if (patch.vertical != null) setPortVertical(patch.vertical);
+                      if (patch.status != null) setPortStatus(patch.status);
                     }}
-                  >
-                    All programs
-                  </span>
-                  {programs.map((g) => (
-                    <span
-                      key={g.name}
-                      className={`sel ${state.filter === g.name ? 'on' : ''}`}
-                      data-filter={g.name}
-                      onClick={() => {
-                        engine.markHumanActive();
-                        setState((s) => ({ ...s, filter: g.name }));
-                      }}
-                    >
-                      {g.name}
-                    </span>
-                  ))}
-                  <PlanSearchBar
-                    plans={data}
-                    program={state.filter}
-                    value={searchQuery}
-                    showing={showing}
-                    total={data.length}
-                    onChange={(v) => {
+                    onExecPortfolio={() => {
                       engine.markHumanActive();
-                      setSearchQuery(v);
+                      domHandlersRef.current.view?.('queue');
                     }}
                     onOpenPlan={(capId) => {
                       engine.markHumanActive();
-                      setSearchQuery('');
                       domHandlersRef.current.openPlan?.(capId);
                     }}
-                    onSearchSubmit={() => {
-                      if (state.view !== 'port') {
-                        setState((s) => ({ ...s, view: 'port' }));
-                      }
-                    }}
                   />
-                  <button
-                    type="button"
-                    className="btn p btn-new-plan"
-                    data-act="open-create-plan"
-                    onClick={() => {
-                      engine.markHumanActive();
-                      openCreatePlan(false);
-                    }}
-                  >
-                    + New Cap Plan
-                  </button>
-                </div>
-
-                <CreatePlanPanel
-                  open={state.createPlan.open}
-                  draft={state.createPlan.draft}
-                  agentMode={state.createPlan.agentMode}
-                  highlightField={state.createPlan.highlightField}
-                  openSelect={state.createPlan.openSelect}
-                  busy={state.createPlan.busy}
-                  error={state.createPlan.error}
-                  programOptions={programs}
-                  onChange={(key, val) => setCreatePlanField(key, val)}
-                  onSubmit={submitCreatePlan}
-                  onClose={closeCreatePlan}
-                />
-
-                {state.view === 'port' && (
-                  <div className="pane on" data-view="port" ref={paneRef}>
-                    <PortfolioLanding
-                      plans={filteredData}
-                      programs={programs}
-                      filter={state.filter}
-                      search={searchQuery}
-                      expandAll={Boolean(searchQuery.trim())}
-                      triageCounts={{
-                        dec: filteredDec.length,
-                        auto: filteredAuto.length,
-                        quiet: filteredQuiet.length,
-                      }}
-                      gotBy={computeXutil(data).gotBy}
-                      onOpenPlan={(capId) => {
-                        engine.markHumanActive();
-                        domHandlersRef.current.openPlan?.(capId);
-                      }}
-                    />
-                  </div>
                 )}
 
                 {state.view === 'plan' && activePlan && (
-                  <div className="pane on" data-view="plan" ref={paneRef}>
-                    <div className="tabs">
-                      <span className="lb">{tabsForPlan(activePlan).length} steps</span>
-                      <div className="tab-list">
-                        {tabsForPlan(activePlan).map((k) => (
-                          <span
-                            key={k}
-                            className={`tab ${state.shownTabs.includes(k) ? 'shown' : ''} ${state.activeTab === k ? 'on' : ''}`}
-                            data-tab={k}
-                            onClick={() => {
-                              engine.markHumanActive();
-                              handleTabClick(k);
-                            }}
-                          >
-                            {TAB_LABELS[k]}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="tp-body">
-                      <PlanTabs
-                        activeTab={state.activeTab}
-                        plan={activePlan}
-                        state={state}
-                        allPlans={data}
-                        decisions={planDecisions[activePlan.capId] || {}}
-                        otWeeks={otWeeksByCap[activePlan.capId] || []}
-                        onEditorChange={setEditorWeek}
-                        onSubmitShrinkage={handleSubmitShrinkage}
-                        onResetShrinkage={handleResetShrinkage}
-                        onApplyShrinkageValue={handleApplyShrinkageValue}
-                        onApplyShrinkagePct={handleApplyShrinkagePct}
-                        onSubmitAttrition={handleSubmitAttrition}
-                        onResetAttrition={handleResetAttrition}
-                        onApplyAttritionValue={handleApplyAttritionValue}
-                        onApplyAttritionPct={handleApplyAttritionPct}
-                        onAttritionChange={setAttrWeek}
-                        onSubmitForecast={handleSubmitForecast}
-                        onSaveHeadcount={handleSaveHeadcount}
-                        onMapRoster={handleMapRoster}
-                        onAcceptRec={handleAcceptRec}
-                        onRejectRec={handleRejectRec}
-                        onOpenQueue={handleOpenQueue}
-                        onDecide={handleDecide}
-                        onOtWeekChange={handleOtWeekChange}
-                        onExecutePlan={handleExecutePlan}
-                        onRecOverride={handleRecOverride}
-                      />
-                    </div>
+                  <div className="panel workflow-panel">
+                    <PlanTabs
+                      activeTab={state.activeTab}
+                      plan={activePlan}
+                      state={state}
+                      allPlans={data}
+                      decisions={planDecisions[activePlan.capId] || {}}
+                      otWeeks={otWeeksByCap[activePlan.capId] || []}
+                      onEditorChange={setEditorWeek}
+                      onSubmitShrinkage={handleSubmitShrinkage}
+                      onResetShrinkage={handleResetShrinkage}
+                      onApplyShrinkageValue={handleApplyShrinkageValue}
+                      onApplyShrinkagePct={handleApplyShrinkagePct}
+                      onSubmitAttrition={handleSubmitAttrition}
+                      onResetAttrition={handleResetAttrition}
+                      onApplyAttritionValue={handleApplyAttritionValue}
+                      onApplyAttritionPct={handleApplyAttritionPct}
+                      onAttritionChange={setAttrWeek}
+                      onSubmitForecast={handleSubmitForecast}
+                      onSaveHeadcount={handleSaveHeadcount}
+                      onMapRoster={handleMapRoster}
+                      onAcceptRec={handleAcceptRec}
+                      onRejectRec={handleRejectRec}
+                      onOpenQueue={handleOpenQueue}
+                      onDecide={handleDecide}
+                      onOtWeekChange={handleOtWeekChange}
+                      onExecutePlan={handleExecutePlan}
+                      onRecOverride={handleRecOverride}
+                    />
                   </div>
                 )}
 
                 {state.view === 'queue' && (
-                  <div className="pane on" data-view="queue" ref={paneRef}>
-                    <div className="qcards">
-                      <div className="qc">
-                        <span className="ic" style={{ background: '#3B6FB5' }}>⏱</span>
-                        <div><div className="t">Overtime authorizations</div><div className="s" id="qOTn">{qOTn} plans</div></div>
-                        <span className="v" id="qOT" style={{ color: '#3B6FB5' }}>{f2(qOT)} hrs</span>
-                      </div>
-                      <div className="qc">
-                        <span className="ic" style={{ background: '#2E7D5B' }}>⇄</span>
-                        <div><div className="t">Cross-util / loans</div><div className="s" id="qXUn">{qXUn} donor plans</div></div>
-                        <span className="v" id="qXU" style={{ color: '#2E7D5B' }}>{f2(qXU)} FTE</span>
-                      </div>
-                      <div className="qc">
-                        <span className="ic" style={{ background: '#F5B01A', color: '#1C1B18' }}>🎓</span>
-                        <div><div className="t">New hire requisitions</div><div className="s" id="qHRn">{qHRn} plans</div></div>
-                        <span className="v" id="qHR" style={{ color: '#8A6100' }}>{qHR} agents</span>
+                  <div className="panel workflow-panel">
+                    <div className="panel-head">
+                      <div className="ic">🚀</div>
+                      <div>
+                        <h2>Review &amp; execute</h2>
+                        <p>Accepted recommendations queue here for execution.</p>
                       </div>
                     </div>
-                    <div className="trihead"><b>Approved plan packages</b><span>tick the ones to execute</span></div>
-                    <div className="selbar">
-                      <b id="selCount">{filteredPackages.filter((p) => p.ticked).length} of {filteredPackages.length}</b> selected to execute ·
-                      <span className="mini" data-act="sel-all" onClick={() => handleSelectAllPackages()}>Select all</span>
-                      <span className="mini" data-act="sel-none" onClick={() => handleClearPackages()}>Clear</span>
-                    </div>
-                    <div id="pkgList">
-                      {filteredPackages.map((p) => (
-                        <div
-                          key={p.id}
-                          className={`pkg ${state.revealed.pkg ? 'in' : ''} ${p.ticked ? 'tick' : ''} ${p.done ? 'done' : ''}`}
-                          data-cap={p.cap_id}
-                          onClick={() => togglePackage(p.cap_id)}
-                        >
-                          <span className="cbx"></span>
+                    <div className="panel-body">
+                      <div className="qcards">
+                        <div className="qc">
+                          <span className="ic" style={{ background: '#3B6FB5' }}>
+                            ⏱
+                          </span>
                           <div>
-                            <div className="nm"><span className="pill">{p.cap_id}</span>{p.plan_name || p.cap_id}</div>
-                            <div className="sub">{p.description || `OT ${f2(p.ot_hrs)} hrs · loan ${f2(p.xu_fte)} FTE`}</div>
+                            <div className="t">Overtime authorizations</div>
+                            <div className="s">{qOTn} plans</div>
                           </div>
-                          <span className="st">{p.status === 'posted' ? 'Posted' : 'Queued'}</span>
+                          <span className="v" style={{ color: '#3B6FB5' }}>
+                            {f2(qOT)} hrs
+                          </span>
                         </div>
-                      ))}
-                    </div>
-                    <div className="acts" style={{ marginTop: 12 }}>
-                      <div className="btn p" data-act="exec" onClick={() => handleExecuteSelected()}>
-                        Execute selected →
+                        <div className="qc">
+                          <span className="ic" style={{ background: '#2E7D5B' }}>
+                            ⇄
+                          </span>
+                          <div>
+                            <div className="t">Cross-util / loans</div>
+                            <div className="s">{qXUn} donor plans</div>
+                          </div>
+                          <span className="v" style={{ color: '#2E7D5B' }}>
+                            {f2(qXU)} FTE
+                          </span>
+                        </div>
+                        <div className="qc">
+                          <span className="ic" style={{ background: '#F5B01A', color: '#1C1B18' }}>
+                            🎓
+                          </span>
+                          <div>
+                            <div className="t">New hire requisitions</div>
+                            <div className="s">{qHRn} plans</div>
+                          </div>
+                          <span className="v" style={{ color: '#8A6100' }}>
+                            {qHR} agents
+                          </span>
+                        </div>
+                      </div>
+                      <div className="selbar" style={{ marginTop: 14 }}>
+                        <b>{filteredPackages.filter((p) => p.ticked).length} of {filteredPackages.length}</b> selected ·
+                        <span className="mini" onClick={() => handleSelectAllPackages()}>
+                          Select all
+                        </span>
+                        <span className="mini" onClick={() => handleClearPackages()}>
+                          Clear
+                        </span>
+                      </div>
+                      <div id="pkgList">
+                        {filteredPackages.map((p) => (
+                          <div
+                            key={p.id}
+                            className={`pkg in ${p.ticked ? 'tick' : ''} ${p.done ? 'done' : ''}`}
+                            data-cap={p.cap_id}
+                            onClick={() => togglePackage(p.cap_id)}
+                          >
+                            <span className="cbx" />
+                            <div>
+                              <div className="nm">
+                                <span className="pill">{p.cap_id}</span>
+                                {p.plan_name || p.cap_id}
+                              </div>
+                              <div className="sub">{p.description || `OT ${f2(p.ot_hrs)} hrs · loan ${f2(p.xu_fte)} FTE`}</div>
+                            </div>
+                            <span className="st">{p.status === 'posted' ? 'Posted' : 'Queued'}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="acts" style={{ marginTop: 12 }}>
+                        <button type="button" className="btn btn-primary" onClick={() => handleExecuteSelected()}>
+                          Execute selected →
+                        </button>
+                      </div>
+                      <div className={`done ${state.execDone ? 'on' : ''}`}>
+                        <span>✓</span>
+                        <span>Packages posted to CAP-ABILITY</span>
                       </div>
                     </div>
-                    <div className={`done ${state.execDone ? 'on' : ''}`} id="execDone"><span>✓</span><span>Packages posted to CAP-ABILITY</span></div>
                   </div>
                 )}
 
                 {state.view === 'time' && (
-                  <div className="pane on" data-view="time" ref={paneRef}>
-                    <div className="ledger">
-                      <div id="ledRows">{ledger.map((l, i) => <div key={l.id} className={`lrow ${state.ledgerAnimated ? 'in' : ''}`} id={`lr${i}`}><span>{l.label}</span><span className="hr">{hm(l.minutes)}</span></div>)}</div>
+                  <div className="panel workflow-panel">
+                    <div className="panel-body">
+                      <div className="ledger">
+                        <div id="ledRows">
+                          {ledger.map((l) => (
+                            <div key={l.id} className="lrow in">
+                              <span>{l.label}</span>
+                              <span className="hr">{hm(l.minutes)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="memlist">
+                        {memories.map((m) => (
+                          <div key={m.id} className={`mem ${state.memoriesCited ? 'cite' : ''}`}>
+                            <div className="k">{m.rule_text}</div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                    <div className="memlist" id="memlist">{memories.map((m) => <div key={m.id} className={`mem ${state.memoriesCited ? 'cite' : ''}`}><div className="k">{m.rule_text}</div></div>)}</div>
                   </div>
                 )}
               </div>
             </div>
-
-            <aside className={`agent ${state.agentTalk ? 'talk' : ''} ${state.agentHear ? 'hear' : ''}`} id="agent">
-              <div className="ahead">
-                <div className="orb">
-                  <span className="ring" />
-                  <span className="ring r2" />
-                  <AgentAvatar talking={state.agentTalk} listening={state.agentHear || voice.recording} />
-                </div>
-                <div className="anm">Vera</div>
-                <div className="arl">Planning agent</div>
-                <div className="wv"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                <div className="ast" id="ast">{state.agentStatus}</div>
-              </div>
-
-              <div className="agent-chat-body">
-                <div className="tl" id="tl" ref={chatTimelineRef}>
-                  {state.messages.map((m, i) => (
-                    <div key={i} className={`m ${m.cls}`}>
-                      <div className="tg">
-                        <b style={{ background: m.hue }}></b>
-                        {m.tag}
-                      </div>
-                      <div className="bd">{m.text}</div>
-                    </div>
-                  ))}
-                  {state.bubble ? (
-                    <div
-                      className={`m v live ${state.agentTalk ? 'speaking' : ''} ${state.agentHear ? 'listening' : ''}`}
-                      aria-live="polite"
-                    >
-                      <div className="tg">
-                        <b style={{ background: HUE.v }}></b>
-                        {state.agentHear ? 'Vera · listening' : state.agentTalk ? 'Vera · speaking' : 'Vera'}
-                      </div>
-                      <div className="bd">
-                        {state.bubble}
-                        {state.agentTalk ? <span className="live-cursor" aria-hidden /> : null}
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="agent-composer-wrap">
-                  {chatFile ? (
-                    <div className="chat-file-chip">
-                      <span title={chatFile.name}>📎 {chatFile.name}</span>
-                      <button type="button" aria-label="Remove file" onClick={() => setChatFile(null)}>
-                        ×
-                      </button>
-                    </div>
-                  ) : null}
-                  <form
-                    className="chat-composer"
-                    onSubmit={async (e) => {
-                      e.preventDefault();
-                      const msg = chatInput.trim();
-                      if ((!msg && !chatFile) || voice.voiceBusy) return;
-                      const file = chatFile;
-                      setChatInput('');
-                      setChatFile(null);
-                      await voice.sendMessage(msg, 'text', { file });
-                    }}
-                  >
-                    <input
-                      ref={chatFileRef}
-                      type="file"
-                      accept=".csv,text/csv"
-                      hidden
-                      onChange={(e) => {
-                        const f = e.target.files?.[0] || null;
-                        e.target.value = '';
-                        if (f) setChatFile(f);
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className={`composer-btn mic ${voice.recording ? 'on' : ''} ${voice.voiceBusy ? 'busy' : ''}`}
-                      id="bMic"
-                      title={voice.recording ? 'Stop and send' : 'Voice input'}
-                      aria-label={voice.recording ? 'Stop recording' : 'Voice input'}
-                      disabled={voice.voiceBusy}
-                      onClick={voice.toggleRecording}
-                    >
-                      {voice.recording ? (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-                          <rect x="6" y="6" width="12" height="12" rx="2" />
-                        </svg>
-                      ) : (
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-                          <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3z" />
-                          <path d="M19 11a7 7 0 0 1-14 0M12 18v3" />
-                        </svg>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      className="composer-btn attach"
-                      title="Attach roster CSV"
-                      aria-label="Attach roster CSV"
-                      disabled={voice.voiceBusy}
-                      onClick={() => chatFileRef.current?.click()}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                      </svg>
-                    </button>
-                    <input
-                      type="text"
-                      className="composer-input"
-                      value={chatInput}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      placeholder={voice.recording ? 'Listening…' : 'Ask Vera anything…'}
-                      disabled={voice.voiceBusy}
-                      aria-label="Message Vera"
-                    />
-                    <button
-                      type="submit"
-                      className="composer-send"
-                      disabled={voice.voiceBusy || (!chatInput.trim() && !chatFile)}
-                      aria-label="Send message"
-                      title="Send"
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
-                        <path d="M5 12h14M13 6l6 6-6 6" />
-                      </svg>
-                    </button>
-                  </form>
-                </div>
-              </div>
-            </aside>
-
-            <div className="tp" style={SHOW_SCENARIO_REPLAY ? undefined : { display: 'none' }}>
-              <button type="button" className="tb" id="bR" title="Restart (R)" aria-label="Restart (R)" onClick={engine.reset}>↺</button>
-              <button
-                type="button"
-                className="tb play"
-                id="bP"
-                title="Play / pause (space)"
-                aria-label="Play / pause (space)"
-                onClick={handlePlay}
-              >
-                {(streamMode ? ws.streaming : engine.playing) ? '❚❚' : '▶'}
-              </button>
-              <button type="button" className="tb" id="bS" title="Step (right arrow)" aria-label="Step (right arrow)" disabled={engine.stepIdx >= engine.stepCount || streamMode} onClick={engine.step}>⏭</button>
-              <button
-                type="button"
-                className={`streamtog ${streamMode ? 'on' : ''}`}
-                title="Stream scenario from backend WebSocket"
-                onClick={() => {
-                  setStreamMode((m) => !m);
-                  ws.connect();
-                }}
-              >
-                {streamMode ? '● Stream' : 'Stream'}
-              </button>
-              <div className="trk">
-                <div className="tks" id="tks">{[...Array(engine.stepCount)].map((_, i) => <i key={i} className={`${i < engine.stepIdx ? 'done' : ''} ${i === engine.stepIdx ? 'now' : ''}`}></i>)}</div>
-                <div className="tmt"><span id="sLb">{stepLabel}</span><span id="sCt">{engine.stepIdx} / {engine.stepCount}</span></div>
-              </div>
-              {[1, 1.6, 2.4].map((sp) => <button key={sp} type="button" className={`sp ${engine.speed === sp ? 'on' : ''}`} onClick={() => engine.setSpeed(sp)}>{sp}x</button>)}
-            </div>
+          </div>
         </div>
       </main>
     </div>

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { f1, f2 } from '../utils/format';
 
 function seriesColor(series, v, i) {
@@ -48,19 +48,49 @@ export default function SeriesChart({
   maxV = 95,
   valueUnit = '',
   thinBars = true,
+  /** Chart.js barPercentage × categoryPercentage (landing O/U uses 0.6 × 0.82). */
+  barRatio = null,
+  /** Fixed corner radius; omit for pill-shaped bars. */
+  barRadius = null,
+  /** Remove wrapper top margin (landing chartbox). */
+  flush = false,
   dragHint = null,
+  /** Stretch chart to container width (Chart.js-style responsive). */
+  responsive = false,
 }) {
+  const wrapRef = useRef(null);
   const svgRef = useRef(null);
+  const [containerW, setContainerW] = useState(0);
   const dragIdxRef = useRef(null);
   const onDragRef = useRef(onDragPoint);
   onDragRef.current = onDragPoint;
   const [dragIdx, setDragIdx] = useState(null);
   const lineData = line?.data || null;
 
+  useLayoutEffect(() => {
+    if (!responsive) return;
+    const el = wrapRef.current;
+    if (!el) return;
+    const w = el.getBoundingClientRect().width;
+    if (w > 0) setContainerW(Math.round(w));
+  }, [responsive]);
+
+  useEffect(() => {
+    if (!responsive) return;
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect?.width;
+      if (w > 0) setContainerW(Math.round(w));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [responsive]);
+
   const n = weeks.length || bars[0]?.data?.length || lineData?.length || 0;
   const layout = useMemo(() => {
     if (!n) return null;
-    const W = 640;
+    const W = responsive && containerW > 0 ? containerW : 640;
     const H = height;
     const L = 44;
     const R = 12;
@@ -87,7 +117,7 @@ export default function SeriesChart({
     };
     const bw = (W - L - R) / n;
     return { W, H, L, R, T, B, lo, hi, Y, fromY, bw, zy: Y(0) };
-  }, [n, height, bars, lineData, zeroLine, dragFromIdx, minV, maxV]);
+  }, [n, height, bars, lineData, zeroLine, dragFromIdx, minV, maxV, responsive, containerW]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -149,7 +179,9 @@ export default function SeriesChart({
   if (!n || !layout) return null;
   const { W, H, L, R, T, B, lo, Y, bw, zy } = layout;
   const canDrag = dragFromIdx != null && typeof onDragPoint === 'function';
-  const barW = thinBars ? Math.max(2.2, Math.min(4.2, bw * 0.18)) : bw * 0.56;
+  const ratio = barRatio ?? (thinBars ? 0.18 : 0.56);
+  const barW = thinBars ? Math.max(2.2, Math.min(4.2, bw * ratio)) : bw * ratio;
+  const barRx = barRadius != null ? Math.min(barRadius, barW / 2) : barW / 2;
   const hoverTips = hoverI == null ? [] : hoverItems(bars, line, hoverI, yFmt, valueUnit);
 
   const grid = [];
@@ -175,7 +207,11 @@ export default function SeriesChart({
   }
 
   return (
-    <div className={`chart on ${canDrag ? 'draggable-chart' : ''}`} style={{ marginTop: 8, position: 'relative' }}>
+    <div
+      ref={wrapRef}
+      className={`chart on ${canDrag ? 'draggable-chart' : ''}${flush ? ' chart-flush' : ''}${responsive ? ' chart-responsive' : ''}`}
+      style={{ marginTop: flush ? 0 : 8, position: 'relative', width: responsive ? '100%' : undefined }}
+    >
       {canDrag ? (
         <div className="dragnote" style={{ marginBottom: 4 }}>
           {dragHint || `↕ Drag the plan points for any future week (snaps to ${snap})`}
@@ -184,7 +220,14 @@ export default function SeriesChart({
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}
-        style={{ touchAction: canDrag ? 'none' : undefined, cursor: dragIdx != null ? 'ns-resize' : undefined }}
+        preserveAspectRatio={responsive ? 'xMinYMid meet' : undefined}
+        style={{
+          width: responsive ? '100%' : undefined,
+          height: H,
+          display: 'block',
+          touchAction: canDrag ? 'none' : undefined,
+          cursor: dragIdx != null ? 'ns-resize' : undefined,
+        }}
         onMouseLeave={() => setHoverI(null)}
       >
         {grid}
@@ -205,7 +248,7 @@ export default function SeriesChart({
                   y={y}
                   width={barW}
                   height={h}
-                  rx={barW / 2}
+                  rx={barRx}
                   fill={color}
                   opacity={dim ? 0.38 : hoverI === i ? 1 : 0.92}
                 />
@@ -220,7 +263,7 @@ export default function SeriesChart({
                 y={y}
                 width={barW}
                 height={h}
-                rx={barW / 2}
+                rx={barRx}
                 fill={color}
                 opacity={dim ? 0.38 : hoverI === i ? 1 : 0.92}
               />

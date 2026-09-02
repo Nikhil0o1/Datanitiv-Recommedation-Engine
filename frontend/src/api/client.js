@@ -278,6 +278,8 @@ export const api = {
     });
   },
 
+  conciergeRecommendations: (limit = 200) =>
+    request(`/api/concierge/recommendations?limit=${limit}`),
   conciergePendingNudges: (limit = 5, { capId, view } = {}) => {
     const qs = new URLSearchParams({ limit: String(limit) });
     if (capId) qs.set('cap_id', capId);

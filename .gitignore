@@ -62,3 +62,6 @@ cape-pg-data.sql
 
 # Cursor / local tooling
 .cursor/
+
+# Generated runtime cache
+backend/cache/
