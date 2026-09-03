@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { f2 } from '../utils/format';
 import { statusOf } from '../utils/planLogic';
 import SeriesChart from './SeriesChart';
@@ -8,6 +8,7 @@ import {
   STATUS_LABELS,
   weekBarData,
 } from '../utils/portfolioRec';
+import { RED_REC_SESSION_KEY } from '../utils/welcomeMessage';
 
 function KminiTile({ label, value, unit = '', barColor, onTrend }) {
   return (
@@ -157,9 +158,18 @@ export default function PortfolioLanding({
   onExecPortfolio,
   onFilterChange,
   gotBy = {},
+  onProgramVisible,
+  recsReady = false,
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [expandedPlans, setExpandedPlans] = useState(() => new Set());
+  const reportedInitialRef = useRef(false);
+
+  const redRecsForGroup = (g) =>
+    g.plans
+      .map((p) => ({ capId: p.capId, rc: portfolioRecChip(p, recsByCap, gotBy) }))
+      .filter(({ rc }) => rc.cls === 'neg')
+      .map(({ capId, rc }) => ({ capId, text: rc.t }));
 
   const filtered = useMemo(() => {
     let rows = plans;
@@ -195,6 +205,27 @@ export default function PortfolioLanding({
     return [...prefer, ...rest].map((name) => ({ name, plans: map[name] }));
   }, [filtered, programs]);
 
+  useEffect(() => {
+    if (reportedInitialRef.current || !groups.length || !recsReady) return;
+    reportedInitialRef.current = true;
+
+    try {
+      if (sessionStorage.getItem(RED_REC_SESSION_KEY)) {
+        console.log('[red-rec-speech] initial readout already done this session — skipping');
+        return;
+      }
+    } catch {
+      /* private browsing — sessionStorage unavailable, skip gating */
+    }
+
+    onProgramVisible?.(groups.flatMap(redRecsForGroup));
+    try {
+      sessionStorage.setItem(RED_REC_SESSION_KEY, '1');
+    } catch {
+      /* ignore */
+    }
+  }, [groups, recsReady]);
+
   const regions = useMemo(() => [...new Set(plans.map((p) => p.region).filter(Boolean))].sort(), [plans]);
   const verticals = useMemo(() => [...new Set(plans.map((p) => p.vertical).filter(Boolean))].sort(), [plans]);
 
@@ -216,12 +247,22 @@ export default function PortfolioLanding({
   }, [queuedPackages]);
 
   const toggleGroup = (name) => {
+    console.log('[toggle-group] clicked:', name, '— collapsed before:', [...collapsedGroups]);
+    const wasCollapsed = collapsedGroups.has(name);
+
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
+      if (wasCollapsed) next.delete(name);
       else next.add(name);
       return next;
     });
+
+    console.log('[toggle-group] wasCollapsed:', wasCollapsed);
+    if (wasCollapsed) {
+      const g = groups.find((x) => x.name === name);
+      console.log('[toggle-group] opening — found group?', !!g, g ? `capIds: ${g.plans.map((p) => p.capId)}` : '');
+      if (g) onProgramVisible?.(redRecsForGroup(g));
+    }
   };
 
   const togglePlan = (capId) => {

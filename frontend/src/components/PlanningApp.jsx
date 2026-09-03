@@ -8,6 +8,8 @@ import '../styles/app.css';
 import { f2, hm } from '../utils/format';
 import { useScenarioEngine } from '../hooks/useScenarioEngine';
 import { usePortfolioRecommendations } from '../hooks/usePortfolioRecommendations';
+import { useWelcomeSpeech } from '../hooks/useWelcomeSpeech';
+import { useRedRecommendationSpeech } from '../hooks/useRedRecommendationSpeech';
 import AgentCursor from './AgentCursor';
 import PlanTabs, { tabsForPlan } from './plan/PlanTabs';
 import PortfolioLanding from './PortfolioLanding';
@@ -207,6 +209,8 @@ export default function PlanningApp() {
 
   const portfolioCapIds = useMemo(() => data.map((p) => p.capId), [data]);
   const portfolioRecs = usePortfolioRecommendations({ enabled: !loading && portfolioCapIds.length > 0, capIds: portfolioCapIds });
+  useWelcomeSpeech({ enabled: !loading && !loadError, cycleLabel, triage });
+  const reportRedRecommendations = useRedRecommendationSpeech();
 
   const matchesSearch = useCallback((item) => matchesPlanSearch(item, searchQuery), [searchQuery]);
 
@@ -1223,6 +1227,8 @@ export default function PlanningApp() {
                     recsByCap={portfolioRecs.byCap}
                     packages={state.packages}
                     gotBy={xutil.gotBy}
+                    recsReady={portfolioRecs.ready}
+                    onProgramVisible={reportRedRecommendations}
                     onFilterChange={(patch) => {
                       if (patch.search != null) setSearchQuery(patch.search);
                       if (patch.region != null) setPortRegion(patch.region);
