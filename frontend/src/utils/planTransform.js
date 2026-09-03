@@ -95,6 +95,8 @@ export function detailToDataRow(detail) {
     plan: detail.plan_name,
     capId: detail.cap_id,
     site: detail.site.endsWith('-') ? detail.site : `${detail.site}-`,
+    subLob: detail.sub_lob || detail.subLob || '',
+    country: detail.country || detail.region || '',
     lob: detail.lob,
     region: detail.region,
     planner: detail.planner,

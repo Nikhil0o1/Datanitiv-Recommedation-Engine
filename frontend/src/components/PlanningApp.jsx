@@ -3,8 +3,6 @@ import { flushSync } from 'react-dom';
 import { api } from '../api/client';
 import { emit, emitError } from '../lib/telemetry';
 import { loadAllDataRows } from '../utils/planTransform';
-import '../styles/copilot-v4.css';
-import '../styles/app.css';
 import { f2, hm } from '../utils/format';
 import { useScenarioEngine } from '../hooks/useScenarioEngine';
 import { usePortfolioRecommendations } from '../hooks/usePortfolioRecommendations';
@@ -12,6 +10,8 @@ import { useWelcomeSpeech } from '../hooks/useWelcomeSpeech';
 import { useRedRecommendationSpeech } from '../hooks/useRedRecommendationSpeech';
 import AgentCursor from './AgentCursor';
 import PlanTabs, { tabsForPlan } from './plan/PlanTabs';
+import PlanWorkflowShell from './plan/PlanWorkflowShell';
+import WorkflowBackbar from './WorkflowBackbar';
 import PortfolioLanding from './PortfolioLanding';
 import PlanRail from './PlanRail';
 import CreatePlanPanel from './CreatePlanPanel';
@@ -24,16 +24,6 @@ import {
   createPlanPayload,
   nextCreatePlanField,
 } from '../utils/createPlanFields';
-
-const WORKFLOW_STEPS = [
-  { key: 'ov', label: 'Overview' },
-  { key: 'shr', label: 'Shrinkage' },
-  { key: 'att', label: 'Attrition' },
-  { key: 'fw', label: 'Forecast' },
-  { key: 'hc', label: 'Headcount' },
-  { key: 'rec', label: 'Recommend' },
-  { key: 'exe', label: 'Execute' },
-];
 
 function buildStaffingPackage(plan, capId, planDecisions, otWeeksByCap, allPlans) {
   const ovr = planDecisions[capId]?.recOvr || {};
@@ -1129,58 +1119,27 @@ export default function PlanningApp() {
           ) : null}
 
           {!isLanding ? (
-            <div id="backbar" className="backbar-v4">
-              <div className="bc-left">
-                <button
-                  type="button"
-                  className="btn-back"
-                  onClick={() => {
-                    engine.markHumanActive();
-                    domHandlersRef.current.view?.('port');
-                  }}
-                >
-                  ← All plans
-                </button>
-                {activePlan ? (
-                  <span className="bc-plan">
-                    <span className="capchip">{activePlan.capId}</span> <b>{activePlan.plan}</b>{' '}
-                    <span style={{ color: 'var(--ink-3)', fontWeight: 500 }}>· detailed analysis</span>
-                  </span>
-                ) : null}
-              </div>
-              <div className="mini-stepper">
-                {WORKFLOW_STEPS.filter((s) => !activePlan || tabsForPlan(activePlan).includes(s.key)).map((s, i, arr) => {
-                  const tabIdx = arr.findIndex((x) => x.key === state.activeTab);
-                  const thisIdx = arr.findIndex((x) => x.key === s.key);
-                  const done = thisIdx < tabIdx;
-                  const active = s.key === state.activeTab;
-                  return (
-                    <span key={s.key} style={{ display: 'contents' }}>
-                      <button
-                        type="button"
-                        className={`ms-step ${done ? 'done' : ''} ${active ? 'active' : ''}`}
-                        onClick={() => {
-                          engine.markHumanActive();
-                          handleTabClick(s.key);
-                          setState((st) => ({ ...st, view: 'plan' }));
-                        }}
-                      >
-                        <span className="num">{i + 1}</span>
-                        <span className="lbl">{s.label}</span>
-                      </button>
-                      {i < arr.length - 1 ? <span className="ms-conn" /> : null}
-                    </span>
-                  );
-                })}
-              </div>
-            </div>
+            <WorkflowBackbar
+              plan={activePlan}
+              activeTab={state.activeTab}
+              onBack={() => {
+                engine.markHumanActive();
+                domHandlersRef.current.view?.('port');
+              }}
+              onStepClick={(key) => {
+                engine.markHumanActive();
+                handleTabClick(key);
+                setState((st) => ({ ...st, view: 'plan' }));
+              }}
+            />
           ) : null}
 
-          <div className={`appgrid ${isLanding ? 'landing' : 'workflow'}`}>
+          <div className={`grid gap-4 ${isLanding ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-[236px_1fr]'} items-start`}>
             {!isLanding ? (
               <PlanRail
                 plans={filteredData}
                 activeCapId={state.activePlan}
+                activePlanName={activePlan?.plan}
                 onSelectPlan={(capId) => {
                   engine.markHumanActive();
                   domHandlersRef.current.openPlan?.(capId);
@@ -1217,7 +1176,7 @@ export default function PlanningApp() {
               <div className="stage-body" ref={paneRef}>
                 {state.view === 'port' && (
                   <PortfolioLanding
-                    plans={filteredData}
+                    allPlans={data}
                     programs={programs}
                     filter={state.filter}
                     search={searchQuery}
@@ -1247,14 +1206,23 @@ export default function PlanningApp() {
                 )}
 
                 {state.view === 'plan' && activePlan && (
-                  <div className="panel workflow-panel">
+                  <PlanWorkflowShell
+                    plan={activePlan}
+                    activeTab={state.activeTab}
+                    onTabChange={handleTabClick}
+                    onBackToPortfolio={() => domHandlersRef.current.view?.('port')}
+                    onOpenQueue={handleOpenQueue}
+                  >
                     <PlanTabs
                       activeTab={state.activeTab}
                       plan={activePlan}
                       state={state}
                       allPlans={data}
+                      packages={state.packages}
+                      recsByCap={portfolioRecs.byCap}
                       decisions={planDecisions[activePlan.capId] || {}}
                       otWeeks={otWeeksByCap[activePlan.capId] || []}
+                      onGoStep={handleTabClick}
                       onEditorChange={setEditorWeek}
                       onSubmitShrinkage={handleSubmitShrinkage}
                       onResetShrinkage={handleResetShrinkage}
@@ -1276,7 +1244,7 @@ export default function PlanningApp() {
                       onExecutePlan={handleExecutePlan}
                       onRecOverride={handleRecOverride}
                     />
-                  </div>
+                  </PlanWorkflowShell>
                 )}
 
                 {state.view === 'queue' && (

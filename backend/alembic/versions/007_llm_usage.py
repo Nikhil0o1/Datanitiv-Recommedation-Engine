@@ -23,7 +23,9 @@ def upgrade() -> None:
             output_tokens INTEGER NOT NULL DEFAULT 0,
             cache_read_tokens INTEGER NOT NULL DEFAULT 0,
             cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-            cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0
+            cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+            latency_ms DOUBLE PRECISION,
+            success BOOLEAN NOT NULL DEFAULT TRUE
         )
         """
     )
