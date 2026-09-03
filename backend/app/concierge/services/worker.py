@@ -70,13 +70,19 @@ async def stop_worker() -> None:
 
 
 async def _run_loop() -> None:
-    async with AsyncSessionLocal() as session:
-        await ensure_default_rules(session)
-        await seed_default_cases(session)
-        await dismiss_non_wfm_open_nudges(session)
-        await reembed_cases_if_needed(session)
-        await ensure_active_model_version(session)
-        await session.commit()
+    try:
+        async with AsyncSessionLocal() as session:
+            await ensure_default_rules(session)
+            await seed_default_cases(session)
+            await dismiss_non_wfm_open_nudges(session)
+            await reembed_cases_if_needed(session)
+            await ensure_active_model_version(session)
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "Concierge worker init failed — run alembic upgrade head on cape_v2 "
+            "(stamp 003_cape_indexes first if using a production dump)"
+        )
 
     while not _stop_event.is_set():
         try:

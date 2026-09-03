@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { api } from '../api/client';
 import { emit, emitError } from '../lib/telemetry';
-import { loadAllDataRows } from '../utils/planTransform';
+import { loadAllDataRows, fetchPlanDataRow, deriveProgramsFromRows } from '../utils/planTransform';
 import { f2, hm } from '../utils/format';
 import { useScenarioEngine } from '../hooks/useScenarioEngine';
 import { usePortfolioRecommendations } from '../hooks/usePortfolioRecommendations';
@@ -198,6 +198,27 @@ export default function PlanningApp() {
   const portfolioCapIds = useMemo(() => data.map((p) => p.capId), [data]);
   const portfolioRecs = usePortfolioRecommendations({ enabled: !loading && portfolioCapIds.length > 0, capIds: portfolioCapIds });
 
+  const mergePlanRow = useCallback((row) => {
+    setData((prev) => {
+      const idx = prev.findIndex((r) => r.capId === row.capId);
+      if (idx < 0) return [...prev, row];
+      const next = prev.slice();
+      next[idx] = row;
+      return next;
+    });
+  }, []);
+
+  const ensurePlanDetail = useCallback(
+    async (capId) => {
+      const existing = data.find((r) => r.capId === capId);
+      if (existing && !existing._summaryOnly) return existing;
+      const row = await fetchPlanDataRow(api, capId);
+      mergePlanRow(row);
+      return row;
+    },
+    [data, mergePlanRow],
+  );
+
   const matchesSearch = useCallback((item) => matchesPlanSearch(item, searchQuery), [searchQuery]);
 
   const filteredData = useMemo(
@@ -269,43 +290,86 @@ export default function PlanningApp() {
   }, [loading, state.view, state.activePlan, portfolioRecs.refresh]);
 
   useEffect(() => {
+    let cancelled = false;
+
+    async function loadOptional(label, fn, fallback) {
+      try {
+        return await fn();
+      } catch (e) {
+        console.warn(`${label} unavailable:`, e?.message || e);
+        return fallback();
+      }
+    }
+
     (async () => {
       try {
-        const [rows, tri, progs, cycle, pkg, led, mem] = await Promise.all([
-          loadAllDataRows(api),
-          api.triage(),
-          api.programs(),
-          api.cycle(),
-          api.queue(),
-          api.ledger(),
-          api.memories(),
+        const [cycle, pkg, led, mem] = await Promise.all([
+          loadOptional('cycle', api.cycle, () => ({ week_label: 'Week of Aug 02, 2026' })),
+          loadOptional('queue', api.queue, () => []),
+          loadOptional('ledger', api.ledger, () => ({ entries: [] })),
+          loadOptional('memories', api.memories, () => []),
         ]);
-        setData(rows);
-        setTriage(tri);
-        setPrograms(progs);
+        if (cancelled) return;
         setCycleLabel(cycle.week_label);
         setLedger(led.entries || []);
         setMemories(mem);
+
+        let rows = [];
+        try {
+          rows = await loadAllDataRows(api, {
+            onBatch: (batch) => {
+              if (cancelled) return;
+              setData(batch);
+              setLoading(false);
+            },
+          });
+        } catch (e) {
+          console.warn('plans unavailable:', e?.message || e);
+          if (!cancelled) {
+            setLoadError(
+              'Could not load plans — is the backend running on port 8077? Wait ~30s after a server reload, then refresh.',
+            );
+            setLoading(false);
+          }
+          return;
+        }
+        if (cancelled) return;
+
+        setData(rows);
+        setPrograms(deriveProgramsFromRows(rows));
         setLoadError(null);
         setState((s) => ({
           ...s,
           packages: (pkg || []).map((p) => ({ ...p, ticked: false, done: false })),
-          editorWeeks: buildEditorWeeks(rows.find((r) => r.capId === 'CAP00010')),
-          attrWeeks: buildAttrWeeks(rows.find((r) => r.capId === 'CAP00010')),
+          editorWeeks: buildEditorWeeks(rows.find((r) => r.capId === s.activePlan) || rows[0]),
+          attrWeeks: buildAttrWeeks(rows.find((r) => r.capId === s.activePlan) || rows[0]),
           revealed: { dec: true, auto: true },
           foldVisible: true,
-          counts: {
-            c1: String(tri.dec?.length ?? ''),
-            c2: String(tri.auto?.length ?? ''),
-          },
         }));
+
+        loadOptional('triage', api.triage, () => ({ dec: [], auto: [], quiet: [] })).then((tri) => {
+          if (cancelled) return;
+          setTriage(tri);
+          setState((s) => ({
+            ...s,
+            counts: {
+              c1: String(tri.dec?.length ?? ''),
+              c2: String(tri.auto?.length ?? ''),
+            },
+          }));
+        });
       } catch (e) {
         console.error(e);
-        setLoadError(e?.message || 'Could not load portfolio from API. Is the backend running on port 8077?');
+        if (!cancelled) {
+          setLoadError(e?.message || 'Could not load portfolio from API. Is the backend running on port 8077?');
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const editorPlanRef = useRef(null);
@@ -934,43 +998,51 @@ export default function PlanningApp() {
     },
     openPlan: (capId) => {
       emit('plan.opened', { metadata: { cap_id: capId, source: 'user', view: 'plan' } });
-      const p = data.find((r) => r.capId === capId);
-      const rosterOk =
-        p?.cls?.status === 'mapped' || p?.cls?.status === 'uploaded';
-      const queuedPkg = stateRef.current.packages.find(
-        (pkg) => pkg.cap_id === capId && pkg.status === 'queued' && !pkg.done,
-      );
-      setState((s) => ({
-        ...s,
-        view: 'plan',
-        activePlan: capId,
-        focusCap: capId,
-        activeTab: 'ov',
-        shownTabs: ['ov'],
-        editorWeeks: p ? buildEditorWeeks(p) : s.editorWeeks,
-        attrWeeks: p ? buildAttrWeeks(p) : s.attrWeeks,
-        editorReady: true,
-        chartOU: { capId, ready: true, mark: 8, lbl: '' },
-        chartShr: { capId, ready: true },
-        doneRec: Boolean(queuedPkg),
-        doneShr: false,
-        shrDirty: false,
-        doneAttr: false,
-        attrDirty: false,
-        doneRoster: rosterOk,
-      }));
-      if (p) {
-        setOtWeeksByCap((prev) => {
-          const n = fwdCount(p);
-          if (queuedPkg?.ot_weeks?.length === n) {
-            return { ...prev, [capId]: queuedPkg.ot_weeks.map((v) => Number(v) || 0) };
-          }
-          return {
-            ...prev,
-            [capId]: prev[capId]?.length === n ? prev[capId] : Array(n).fill(defaultOtWeekly(p)),
-          };
-        });
-      }
+      void (async () => {
+        let p;
+        try {
+          p = await ensurePlanDetail(capId);
+        } catch (e) {
+          console.error(e);
+          p = data.find((r) => r.capId === capId);
+        }
+        const rosterOk =
+          p?.cls?.status === 'mapped' || p?.cls?.status === 'uploaded';
+        const queuedPkg = stateRef.current.packages.find(
+          (pkg) => pkg.cap_id === capId && pkg.status === 'queued' && !pkg.done,
+        );
+        setState((s) => ({
+          ...s,
+          view: 'plan',
+          activePlan: capId,
+          focusCap: capId,
+          activeTab: 'ov',
+          shownTabs: ['ov'],
+          editorWeeks: p ? buildEditorWeeks(p) : s.editorWeeks,
+          attrWeeks: p ? buildAttrWeeks(p) : s.attrWeeks,
+          editorReady: Boolean(p),
+          chartOU: { capId, ready: true, mark: 8, lbl: '' },
+          chartShr: { capId, ready: true },
+          doneRec: Boolean(queuedPkg),
+          doneShr: false,
+          shrDirty: false,
+          doneAttr: false,
+          attrDirty: false,
+          doneRoster: rosterOk,
+        }));
+        if (p) {
+          setOtWeeksByCap((prev) => {
+            const n = fwdCount(p);
+            if (queuedPkg?.ot_weeks?.length === n) {
+              return { ...prev, [capId]: queuedPkg.ot_weeks.map((v) => Number(v) || 0) };
+            }
+            return {
+              ...prev,
+              [capId]: prev[capId]?.length === n ? prev[capId] : Array(n).fill(defaultOtWeekly(p)),
+            };
+          });
+        }
+      })();
     },
     openTab: (tab) => {
       emit('tab.changed', { metadata: { cap_id: stateRef.current.activePlan, active_tab: tab, view: 'plan' } });
@@ -1195,6 +1267,9 @@ export default function PlanningApp() {
                     onOpenPlan={(capId) => {
                       engine.markHumanActive();
                       domHandlersRef.current.openPlan?.(capId);
+                    }}
+                    onEnsurePlanDetail={(capId) => {
+                      ensurePlanDetail(capId).catch(console.error);
                     }}
                   />
                 )}

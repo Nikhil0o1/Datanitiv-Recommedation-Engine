@@ -152,8 +152,97 @@ export function detailToDataRow(detail) {
   };
 }
 
-export async function loadAllDataRows(api) {
+/** Minimal portfolio row from /api/plans summary — charts enrich in background. */
+export function summaryToDataRow(summary) {
+  const enrich = BY_CAP[summary.cap_id] || {};
+  const curIdx = summary.cur_week_idx || 0;
+  const n = Math.max(curIdx + 12, 16);
+  return {
+    plan: summary.plan_name,
+    capId: summary.cap_id,
+    site: summary.site?.endsWith('-') ? summary.site : `${summary.site || ''}-`,
+    subLob: summary.sub_lob || summary.subLob || '',
+    country: summary.country || summary.region || '',
+    lob: summary.lob,
+    region: summary.region,
+    planner: summary.planner,
+    program: summary.program,
+    vertical: summary.vertical,
+    weeks: [],
+    curIdx,
+    isVol: summary.is_vol ?? enrich.isVol ?? false,
+    ou: summary.ou ?? enrich.ou ?? 0,
+    ouShrink: summary.ou ?? enrich.ouShrink ?? summary.ou ?? 0,
+    sustained: summary.sustained ?? enrich.sustained ?? 0,
+    minOUfwd: summary.min_ou_fwd ?? enrich.minOUfwd ?? 0,
+    closingFTE: summary.closing_fte ?? enrich.closingFTE ?? 0,
+    availHrs: enrich.availHrs ?? 40,
+    shrink12: summary.shrink12 ?? enrich.shrink12 ?? 0,
+    attr12: summary.attr12 ?? enrich.attr12 ?? 0,
+    hire12: summary.hire12 ?? 0,
+    recOT: 0,
+    nClasses12: summary.n_classes_12 ?? 0,
+    billable: summary.billable,
+    fBias: enrich.fBias ?? null,
+    aBias: enrich.aBias ?? null,
+    sOU: zeros(n, summary.ou ?? 0),
+    sShrink: zeros(n, 0),
+    sShrinkPlan: zeros(n, summary.shrink12 ?? 0),
+    sProj: zeros(n, 0),
+    sReq: zeros(n, 0),
+    sAttr: zeros(n, summary.attr12 ?? 0),
+    sAttrPlan: zeros(n, 0),
+    sHire: zeros(n, 0),
+    sFcst: enrich.sFcst ?? null,
+    sActVol: enrich.sActVol ?? null,
+    sAhtGoal: enrich.sAhtGoal ?? null,
+    sAhtAct: enrich.sAhtAct ?? null,
+    cls: enrich.cls || null,
+    hcCur: hcFromApi(enrich.hcCur),
+    hcLast: hcFromApi(enrich.hcLast),
+    _summaryOnly: true,
+  };
+}
+
+export async function loadAllDataRows(api, { onBatch } = {}) {
   const summaries = await api.plans();
-  const details = await Promise.all(summaries.map((s) => api.plan(s.cap_id)));
-  return details.map(detailToDataRow);
+  const rows = summaries.map(summaryToDataRow);
+  if (onBatch) onBatch([...rows]);
+  return rows;
+}
+
+/** Build program sidebar list from loaded portfolio rows (avoids extra /api/programs). */
+export function deriveProgramsFromRows(rows) {
+  const grouped = {};
+  rows.forEach((r) => {
+    const name = r.program || 'Unknown';
+    if (!grouped[name]) grouped[name] = { name, plan_count: 0, net_ou: 0 };
+    grouped[name].plan_count += 1;
+    grouped[name].net_ou += Number(r.ou) || 0;
+  });
+  return Object.entries(grouped)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, g], idx) => ({
+      id: idx + 1,
+      name: g.name,
+      plan_count: g.plan_count,
+      net_ou: Math.round(g.net_ou * 100) / 100,
+    }));
+}
+
+/** Fetch one plan detail and merge into a portfolio row. */
+export async function fetchPlanDataRow(api, capId) {
+  const detail = await api.plan(capId);
+  return detailToDataRow(detail);
+}
+
+const ENRICH_BATCH = 8;
+
+/** Low-priority background enrichment for week bars / expand panels. */
+export async function enrichDataRowsInBackground(api, capIds, mergeRow) {
+  for (let i = 0; i < capIds.length; i += ENRICH_BATCH) {
+    const chunk = capIds.slice(i, i + ENRICH_BATCH);
+    const details = await Promise.all(chunk.map((capId) => api.plan(capId)));
+    details.forEach((detail) => mergeRow(detailToDataRow(detail)));
+  }
 }

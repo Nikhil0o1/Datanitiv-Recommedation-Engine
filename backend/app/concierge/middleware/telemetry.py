@@ -25,7 +25,9 @@ class ConciergeTelemetryMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         latency_ms = (time.perf_counter() - start) * 1000
         if request.url.path.startswith("/api/"):
-            await self._emit(request, response.status_code, latency_ms, correlation_id)
+            import asyncio
+
+            asyncio.create_task(self._emit(request, response.status_code, latency_ms, correlation_id))
         response.headers["X-Correlation-ID"] = correlation_id
         return response
 

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import OneviewHeaderDetails, OneviewHierarchy, OneviewNewHire, OneviewPlannerDataset, OneviewShrinkage
@@ -84,6 +85,33 @@ def week_dates_from_labels(labels: list[str]) -> list[date]:
     month, day = map(int, labels[0].split("/"))
     start = date(2026, month, day)
     return [start + timedelta(weeks=i) for i in range(len(labels))]
+
+
+def week_labels_from_dates(dates: list[date]) -> list[str]:
+    return [f"{d.month}/{d.day}" for d in dates]
+
+
+def default_cur_idx(dates: list[date]) -> int:
+    """Planning cycle anchor used when demo meta is absent (Aug 02, 2026)."""
+    idx = week_index_for_date(dates, date(2026, 8, 2))
+    if idx is not None:
+        return idx
+    today_idx = week_index_for_date(dates, date.today())
+    if today_idx is not None:
+        return today_idx
+    return max(0, len(dates) - 1)
+
+
+async def _distinct_planner_dates(session: AsyncSession, cp_plan_id: int) -> list[date]:
+    rows = (
+        await session.execute(
+            select(OneviewPlannerDataset.date)
+            .where(OneviewPlannerDataset.cp_plan_id == cp_plan_id)
+            .distinct()
+            .order_by(OneviewPlannerDataset.date)
+        )
+    ).scalars().all()
+    return list(rows)
 
 
 def display_fte_series(plan: "LoadedPlan") -> tuple[list[float], list[float]]:
@@ -181,34 +209,65 @@ class LoadedPlan:
     roster_rows: list[OneviewNewHire]
 
 
+_PLANS_CACHE: tuple[float, list["LoadedPlan"]] | None = None
+_PLANS_CACHE_TTL_SEC = 120.0
+
+
+def invalidate_plans_cache() -> None:
+    global _PLANS_CACHE
+    _PLANS_CACHE = None
+
+
 async def _plan_meta(session: AsyncSession) -> dict:
     return await get_json_setting(session, DEMO_PLAN_META, {})
 
 
-async def load_plan(session: AsyncSession, cap_id: str) -> LoadedPlan | None:
-    cp_id = cap_to_cp(cap_id)
-    hierarchy = (
-        await session.execute(select(OneviewHierarchy).where(OneviewHierarchy.cp_plan_id == cp_id))
-    ).scalar_one_or_none()
-    if not hierarchy:
+async def load_plan(
+    session: AsyncSession,
+    cap_id: str,
+    *,
+    all_meta: dict | None = None,
+    hierarchy: OneviewHierarchy | None = None,
+) -> LoadedPlan | None:
+    if hierarchy is None:
+        cp_id = cap_to_cp(cap_id)
         hierarchy = (
-            await session.execute(select(OneviewHierarchy).where(OneviewHierarchy.capability_id == cap_id))
+            await session.execute(select(OneviewHierarchy).where(OneviewHierarchy.cp_plan_id == cp_id))
         ).scalar_one_or_none()
-    if not hierarchy:
-        return None
+        if not hierarchy:
+            hierarchy = (
+                await session.execute(select(OneviewHierarchy).where(OneviewHierarchy.capability_id == cap_id))
+            ).scalar_one_or_none()
+        if not hierarchy:
+            return None
+        cap_id = hierarchy.capability_id or cp_to_cap(hierarchy.cp_plan_id)
 
-    all_meta = await _plan_meta(session)
-    meta = all_meta.get(cap_id, {})
+    if all_meta is None:
+        all_meta = await _plan_meta(session)
+    meta = dict(all_meta.get(cap_id) or {})
+
+    planner_rows = list(
+        (
+            await session.execute(
+                select(OneviewPlannerDataset).where(OneviewPlannerDataset.cp_plan_id == hierarchy.cp_plan_id)
+            )
+        ).scalars().all()
+    )
+
     week_labels = meta.get("weeks") or []
-    if not week_labels:
+    if week_labels:
+        dates = week_dates_from_labels(week_labels)
+    else:
+        dates = sorted({row.date for row in planner_rows if row.date})
+        if not dates:
+            return None
+        week_labels = week_labels_from_dates(dates)
+        if "curIdx" not in meta:
+            meta["curIdx"] = default_cur_idx(dates)
+
+    if not dates:
         return None
 
-    dates = week_dates_from_labels(week_labels)
-    planner_rows = (
-        await session.execute(
-            select(OneviewPlannerDataset).where(OneviewPlannerDataset.cp_plan_id == hierarchy.cp_plan_id)
-        )
-    ).scalars().all()
     kpi_map = {(row.date, row.kpi_key): row.value for row in planner_rows}
 
     ou = [float(kpi_map.get((d, KPI_OU), 0) or 0) for d in dates]
@@ -495,17 +554,59 @@ def plan_to_detail(plan: LoadedPlan) -> PlanDetail:
 
 
 async def load_all_plans(session: AsyncSession, program: str | None = None) -> list[LoadedPlan]:
+    global _PLANS_CACHE
+    if program is None and _PLANS_CACHE is not None:
+        cached_at, cached = _PLANS_CACHE
+        if time.monotonic() - cached_at < _PLANS_CACHE_TTL_SEC:
+            return cached
+
     stmt = select(OneviewHierarchy).order_by(OneviewHierarchy.cp_plan_name)
     if program:
         stmt = stmt.where(OneviewHierarchy.program_name == program)
     hierarchies = list((await session.execute(stmt)).scalars().all())
+    if not hierarchies:
+        return []
+
+    all_meta = await _plan_meta(session)
     plans: list[LoadedPlan] = []
     for hierarchy in hierarchies:
         cap_id = hierarchy.capability_id or cp_to_cap(hierarchy.cp_plan_id)
-        loaded = await load_plan(session, cap_id)
+        loaded = await load_plan(session, cap_id, all_meta=all_meta, hierarchy=hierarchy)
         if loaded:
             plans.append(loaded)
+
+    if program is None:
+        _PLANS_CACHE = (time.monotonic(), plans)
     return plans
+
+
+async def portfolio_filter_facets(session: AsyncSession) -> tuple[list[str], list[str]]:
+    """Distinct region / vertical for loadable plans — one SQL query, no full plan load."""
+    has_planner = exists(
+        select(OneviewPlannerDataset.cp_plan_id).where(
+            OneviewPlannerDataset.cp_plan_id == OneviewHierarchy.cp_plan_id,
+            OneviewPlannerDataset.date.isnot(None),
+        ).limit(1)
+    )
+    rows = (
+        await session.execute(
+            select(
+                OneviewHierarchy.region_name,
+                OneviewHierarchy.vertical_name,
+                OneviewHierarchy.business_entity_name,
+            ).where(has_planner)
+        )
+    ).all()
+    regions: set[str] = set()
+    verticals: set[str] = set()
+    for region_name, vertical_name, business_entity_name in rows:
+        region = (region_name or "").strip()
+        if region:
+            regions.add(region)
+        vertical = (vertical_name or business_entity_name or "").strip()
+        if vertical:
+            verticals.add(vertical)
+    return sorted(regions), sorted(verticals)
 
 
 async def load_plan_detail(session: AsyncSession, cap_id: str) -> PlanDetail | None:
