@@ -6,7 +6,30 @@ function seriesColor(series, v, i) {
   return typeof series.color === 'function' ? series.color(v, i) : series.color || '#2a78d6';
 }
 
-function hoverItems(bars, line, i, yFmt, valueUnit) {
+/** Pick x-axis week indices with enough horizontal gap to avoid overlapping MM/DD labels. */
+function xTickIndices(n, bw, minLabelPx = 44, xTickStep = null) {
+  if (n <= 0) return [];
+  if (n === 1) return [0];
+  if (xTickStep != null && xTickStep > 0) {
+    const indices = [];
+    for (let i = 0; i < n; i += xTickStep) indices.push(i);
+    const last = n - 1;
+    if (indices[indices.length - 1] !== last) indices.push(last);
+    return indices;
+  }
+  const step = Math.max(1, Math.ceil(minLabelPx / Math.max(bw, 1)));
+  const indices = [];
+  for (let i = 0; i < n; i += step) indices.push(i);
+  const last = n - 1;
+  const prev = indices[indices.length - 1];
+  if (prev !== last) {
+    if ((last - prev) * bw < minLabelPx * 0.6) indices[indices.length - 1] = last;
+    else indices.push(last);
+  }
+  return indices;
+}
+
+function hoverItems(bars, line, overlayLine, i, yFmt, valueUnit) {
   const unit = valueUnit ? ` ${valueUnit}` : '';
   const items = [];
   (bars || []).forEach((series) => {
@@ -18,6 +41,14 @@ function hoverItems(bars, line, i, yFmt, valueUnit) {
       color: seriesColor(series, v, i),
     });
   });
+  const ov = overlayLine?.data?.[i];
+  if (ov != null) {
+    items.push({
+      label: overlayLine.tipLabel || overlayLine.label || 'Actual',
+      text: `${yFmt(ov)}${unit}`,
+      color: overlayLine.color || '#2a78d6',
+    });
+  }
   const lv = line?.data?.[i];
   if (lv != null) {
     items.push({
@@ -35,7 +66,9 @@ export default function SeriesChart({
   curIdx = 0,
   bars = [],
   line = null,
+  overlayLine = null,
   yFmt = (v) => f1(v),
+  tipFmt = null,
   height = 200,
   markThisWeek = true,
   zeroLine = false,
@@ -55,6 +88,18 @@ export default function SeriesChart({
   /** Remove wrapper top margin (landing chartbox). */
   flush = false,
   dragHint = null,
+  hideDragHint = false,
+  /** Horizontal guide line at a fixed Y value, e.g. target attrition rate. */
+  guideLine = null,
+  /** Fixed Y-axis scale, e.g. { min: 0, max: 35, step: 5 } for shrinkage %. */
+  fixedYScale = null,
+  /** Force x-axis label every N weeks (e.g. 2 for biweekly). */
+  xTickStep = null,
+  /** v4 reference styling (grid, labels, THIS WK marker). */
+  chartTheme = null,
+  thisWeekLabel = null,
+  /** Extra left margin for %-axis labels (attrition). */
+  marginLeft = null,
   /** Stretch chart to container width (Chart.js-style responsive). */
   responsive = false,
 }) {
@@ -66,6 +111,7 @@ export default function SeriesChart({
   onDragRef.current = onDragPoint;
   const [dragIdx, setDragIdx] = useState(null);
   const lineData = line?.data || null;
+  const overlayData = overlayLine?.data || null;
 
   useLayoutEffect(() => {
     if (!responsive) return;
@@ -87,18 +133,19 @@ export default function SeriesChart({
     return () => ro.disconnect();
   }, [responsive]);
 
-  const n = weeks.length || bars[0]?.data?.length || lineData?.length || 0;
+  const n = weeks.length || bars[0]?.data?.length || lineData?.length || overlayData?.length || 0;
   const layout = useMemo(() => {
     if (!n) return null;
     const W = responsive && containerW > 0 ? containerW : 640;
     const H = height;
-    const L = 44;
+    const L = marginLeft ?? (fixedYScale?.step != null && fixedYScale.step < 1 ? 50 : 44);
     const R = 12;
     const T = 18;
-    const B = 26;
+    const B = 30;
     const vals = [];
     bars.forEach((b) => (b.data || []).forEach((v) => v != null && vals.push(v)));
     if (lineData) lineData.forEach((v) => v != null && vals.push(v));
+    if (overlayData) overlayData.forEach((v) => v != null && vals.push(v));
     if (!vals.length) vals.push(0);
     if (zeroLine) vals.push(0);
     // keep headroom while dragging
@@ -108,8 +155,8 @@ export default function SeriesChart({
     const mn = Math.min(...vals);
     const mx = Math.max(...vals);
     const pad = (mx - mn) * 0.12 || 1;
-    const lo = mn - pad;
-    const hi = mx + pad;
+    const lo = fixedYScale ? (fixedYScale.min ?? 0) : mn - pad;
+    const hi = fixedYScale ? (fixedYScale.max ?? mx + pad) : mx + pad;
     const Y = (x) => T + ((H - T - B) * (1 - (x - lo) / (hi - lo || 1)));
     const fromY = (py) => {
       const t = (py - T) / (H - T - B || 1);
@@ -117,7 +164,7 @@ export default function SeriesChart({
     };
     const bw = (W - L - R) / n;
     return { W, H, L, R, T, B, lo, hi, Y, fromY, bw, zy: Y(0) };
-  }, [n, height, bars, lineData, zeroLine, dragFromIdx, minV, maxV, responsive, containerW]);
+  }, [n, height, bars, lineData, overlayData, zeroLine, dragFromIdx, minV, maxV, responsive, containerW, fixedYScale, marginLeft]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -142,6 +189,33 @@ export default function SeriesChart({
     setDragIdx(null);
   }, []);
 
+  const pickHoverIndex = useCallback(
+    (clientX) => {
+      const lay = layoutRef.current;
+      const count = weeks.length;
+      if (!svgRef.current || !lay || !count) return null;
+      const rect = svgRef.current.getBoundingClientRect();
+      if (!rect.width) return null;
+      const svgX = ((clientX - rect.left) / rect.width) * lay.W;
+      const i = Math.floor((svgX - lay.L) / lay.bw);
+      if (i < 0 || i >= count) return null;
+      return i;
+    },
+    [weeks.length],
+  );
+
+  const handleSvgMouseMove = useCallback(
+    (e) => {
+      if (dragIdxRef.current != null) return;
+      setHoverI(pickHoverIndex(e.clientX));
+    },
+    [pickHoverIndex],
+  );
+
+  const handleSvgMouseLeave = useCallback(() => {
+    if (dragIdxRef.current == null) setHoverI(null);
+  }, []);
+
   const onDragStart = (i, e) => {
     if (dragFromIdx == null || i < dragFromIdx || !onDragRef.current) return;
     if (dragUntilIdx != null && i > dragUntilIdx) return;
@@ -152,6 +226,7 @@ export default function SeriesChart({
     e.stopPropagation();
     dragIdxRef.current = i;
     setDragIdx(i);
+    setHoverI(null);
 
     // Listen for both pointer + mouse moves (Playwright / some browsers only emit one)
     const move = (ev) => {
@@ -182,20 +257,62 @@ export default function SeriesChart({
   const ratio = barRatio ?? (thinBars ? 0.18 : 0.56);
   const barW = thinBars ? Math.max(2.2, Math.min(4.2, bw * ratio)) : bw * ratio;
   const barRx = barRadius != null ? Math.min(barRadius, barW / 2) : barW / 2;
-  const hoverTips = hoverI == null ? [] : hoverItems(bars, line, hoverI, yFmt, valueUnit);
+  const hoverTips = hoverI == null ? [] : hoverItems(bars, line, overlayLine, hoverI, tipFmt || yFmt, valueUnit);
+  const xTicks = xTickIndices(n, bw, 44, xTickStep);
+  const weekMarker =
+    thisWeekLabel ?? (chartTheme === 'v4' ? 'THIS WK' : 'THIS WEEK');
+  const hoverX = hoverI != null ? L + bw * hoverI + bw * 0.5 : 0;
+  let hoverAnchorY = T + 24;
+  if (hoverI != null) {
+    const vals = [];
+    bars.forEach((b) => {
+      const v = b.data?.[hoverI];
+      if (v != null) vals.push(v);
+    });
+    if (overlayData?.[hoverI] != null) vals.push(overlayData[hoverI]);
+    if (lineData?.[hoverI] != null) vals.push(lineData[hoverI]);
+    if (vals.length) hoverAnchorY = Y(vals.reduce((s, v) => s + v, 0) / vals.length);
+  }
 
   const grid = [];
-  for (let t = 0; t <= 4; t++) {
-    const vv = lo + ((layout.hi - lo) * t) / 4;
-    const yy = Y(vv);
-    grid.push(
-      <g key={t}>
-        <line className="gl" x1={L} y1={yy} x2={W - R} y2={yy} />
-        <text className="al" x={L - 6} y={yy + 3} textAnchor="end">
-          {yFmt(vv)}
-        </text>
-      </g>,
-    );
+  if (fixedYScale?.step) {
+    const ymin = fixedYScale.min ?? lo;
+    const ymax = fixedYScale.max ?? hi;
+    const step = fixedYScale.step;
+    const count = Math.max(0, Math.round((ymax - ymin) / step));
+    for (let t = 0; t <= count; t++) {
+      const vv = Math.round((ymin + t * step) * 1000) / 1000;
+      const yy = Y(vv);
+      grid.push(
+        <g key={`y${t}`}>
+          <line className="gl" x1={L} y1={yy} x2={W - R} y2={yy} />
+          <text className="al" x={L - 6} y={yy + 3} textAnchor="end">
+            {yFmt(vv)}
+          </text>
+        </g>,
+      );
+    }
+  } else {
+    for (let t = 0; t <= 4; t++) {
+      const vv = lo + ((layout.hi - lo) * t) / 4;
+      const yy = Y(vv);
+      grid.push(
+        <g key={t}>
+          <line className="gl" x1={L} y1={yy} x2={W - R} y2={yy} />
+          <text className="al" x={L - 6} y={yy + 3} textAnchor="end">
+            {yFmt(vv)}
+          </text>
+        </g>,
+      );
+    }
+  }
+
+  let overlayPath = '';
+  if (overlayData) {
+    const pts = overlayData
+      .map((v, i) => (v == null ? null : `${L + bw * i + bw * 0.5},${Y(v)}`))
+      .filter(Boolean);
+    overlayPath = pts.length ? `M ${pts.join(' L ')}` : '';
   }
 
   let linePath = '';
@@ -209,28 +326,42 @@ export default function SeriesChart({
   return (
     <div
       ref={wrapRef}
-      className={`chart on ${canDrag ? 'draggable-chart' : ''}${flush ? ' chart-flush' : ''}${responsive ? ' chart-responsive' : ''}`}
+      className={`chart on ${canDrag ? 'draggable-chart' : ''}${flush ? ' chart-flush' : ''}${responsive ? ' chart-responsive' : ''}${chartTheme === 'v4' ? ' chart-v4' : ''}`}
       style={{ marginTop: flush ? 0 : 8, position: 'relative', width: responsive ? '100%' : undefined }}
     >
-      {canDrag ? (
+      {canDrag && !hideDragHint ? (
         <div className="dragnote" style={{ marginBottom: 4 }}>
           {dragHint || `↕ Drag the plan points for any future week (snaps to ${snap})`}
         </div>
       ) : null}
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${W} ${H}`}
-        preserveAspectRatio={responsive ? 'xMinYMid meet' : undefined}
-        style={{
-          width: responsive ? '100%' : undefined,
-          height: H,
-          display: 'block',
-          touchAction: canDrag ? 'none' : undefined,
-          cursor: dragIdx != null ? 'ns-resize' : undefined,
-        }}
-        onMouseLeave={() => setHoverI(null)}
-      >
+      <div className="chart-plot" style={{ position: 'relative' }}>
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          preserveAspectRatio={responsive ? 'xMinYMid meet' : undefined}
+          style={{
+            width: responsive ? '100%' : undefined,
+            height: H,
+            display: 'block',
+            touchAction: canDrag ? 'none' : undefined,
+            cursor: dragIdx != null ? 'ns-resize' : canDrag ? 'crosshair' : 'default',
+          }}
+          onMouseMove={handleSvgMouseMove}
+          onMouseLeave={handleSvgMouseLeave}
+        >
         {grid}
+        {guideLine != null && guideLine.value != null ? (
+          <line
+            className="guide-line"
+            x1={L}
+            y1={Y(guideLine.value)}
+            x2={W - R}
+            y2={Y(guideLine.value)}
+            stroke={guideLine.color || '#2b2f36'}
+            strokeWidth="1.2"
+            strokeDasharray={guideLine.dash || '5 4'}
+          />
+        ) : null}
         {zeroLine ? <line className="zl" x1={L} y1={zy} x2={W - R} y2={zy} /> : null}
         {bars.map((series, si) =>
           (series.data || []).map((v, i) => {
@@ -270,7 +401,30 @@ export default function SeriesChart({
             );
           }),
         )}
-        {linePath ? (
+        {overlayPath ? (
+          <path
+            d={overlayPath}
+            fill="none"
+            stroke={overlayLine.color || '#2a78d6'}
+            strokeWidth="2"
+          />
+        ) : null}
+        {overlayData &&
+          overlayData.map((v, i) => {
+            if (v == null) return null;
+            return (
+              <circle
+                key={`ov${i}`}
+                cx={L + bw * i + bw * 0.5}
+                cy={Y(v)}
+                r={3.5}
+                fill={overlayLine.color || '#2a78d6'}
+                stroke="#fff"
+                strokeWidth="1.2"
+              />
+            );
+          })}
+        {linePath && !line?.hidePath ? (
           <path d={linePath} fill="none" stroke={line.color || '#c98aa0'} strokeWidth="2" strokeDasharray={line.dash || undefined} />
         ) : null}
         {lineData &&
@@ -306,17 +460,27 @@ export default function SeriesChart({
               strokeDasharray="4 3"
             />
             <text x={L + bw * curIdx + bw * 0.5} y={T - 4} textAnchor="middle" fill="#f5a623" style={{ fontSize: 9, fontWeight: 700 }}>
-              THIS WK
+              {weekMarker}
             </text>
           </>
         ) : null}
-        {weeks.map((wk, i) =>
-          i % 2 === 0 || i === n - 1 ? (
-            <text key={`x${i}`} className="al" x={L + bw * i + bw * 0.5} y={H - 7} textAnchor="middle">
-              {wk}
-            </text>
-          ) : null,
-        )}
+        {hoverI != null && hoverI >= 0 && hoverI < n ? (
+          <line
+            x1={hoverX}
+            y1={T}
+            x2={hoverX}
+            y2={H - B}
+            stroke="#eb6834"
+            strokeWidth="1.5"
+            strokeDasharray="4 3"
+            opacity={0.9}
+          />
+        ) : null}
+        {xTicks.map((i) => (
+          <text key={`x${i}`} className="al" x={L + bw * i + bw * 0.5} y={H - 7} textAnchor="middle">
+            {weeks[i]}
+          </text>
+        ))}
         {Array.from({ length: n }, (_, i) => (
           <rect
             key={`hit${i}`}
@@ -325,26 +489,31 @@ export default function SeriesChart({
             width={bw}
             height={Math.max(1, H - T - B)}
             fill="transparent"
-            style={{ pointerEvents: canDrag ? 'none' : 'all' }}
-            onMouseEnter={() => setHoverI(i)}
+            pointerEvents="none"
           />
         ))}
-      </svg>
-      {hoverTips.length ? (
-        <div
-          className="chart-tip"
-          style={{ left: `${((L + bw * hoverI + bw * 0.5) / W) * 100}%` }}
-        >
-          <div className="chart-tip-wk">{weeks[hoverI] || ''}</div>
-          {hoverTips.map((t, ti) => (
-            <div key={`${t.label}-${ti}`} className="chart-tip-row">
-              <i style={{ background: t.color }} />
-              {t.label}: {t.text}
-            </div>
-          ))}
-        </div>
-      ) : null}
-      {bars.some((b) => b.label) || line?.label ? (
+        </svg>
+        {hoverI != null && hoverTips.length > 0 ? (
+          <div
+            className="chart-tip chart-tip-pointed"
+            style={{
+              left: `${(hoverX / W) * 100}%`,
+              top: `${(hoverAnchorY / H) * 100}%`,
+            }}
+          >
+            <div className="chart-tip-wk">{weeks[hoverI] || ''}</div>
+            {hoverTips.map((t, ti) => (
+              <div key={`${t.label}-${ti}`} className="chart-tip-row">
+                <i style={{ background: t.color }} />
+                <span>
+                  {t.label}: {t.text}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {bars.some((b) => b.label) || overlayLine?.label || line?.label ? (
         <div className="lgd" style={{ marginTop: 6 }}>
           {bars.map((b) =>
             b.label ? (
@@ -354,7 +523,13 @@ export default function SeriesChart({
               </span>
             ) : null,
           )}
-          {line?.label ? (
+          {overlayLine?.label ? (
+            <span>
+              <i style={{ background: overlayLine.color || '#2a78d6' }} />
+              {overlayLine.label}
+            </span>
+          ) : null}
+          {line?.label && line.showLegend !== false ? (
             <span>
               <i style={{ background: line.color || '#c98aa0' }} />
               {line.label}

@@ -1,7 +1,9 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { f2 } from '../utils/format';
 import { statusOf } from '../utils/planLogic';
-import SeriesChart from './SeriesChart';
+import { filterPortfolioPlans, portfolioFilterOptions } from '../utils/planSearch';
+import { api } from '../api/client';
+import LandingOuChart from './LandingOuChart';
 import {
   portfolioRecChip,
   rosterBad,
@@ -9,16 +11,29 @@ import {
   weekBarData,
 } from '../utils/portfolioRec';
 
+const ST_CHIP = {
+  critical: 'bg-neg-bg text-neg',
+  under: 'bg-warn-bg text-warn',
+  surplus: 'bg-[#e2f5ec] text-pos',
+  balanced: 'bg-line-2 text-ink-2',
+};
+
+const REC_CHIP = {
+  pos: 'border-[#bce6d3] bg-[#e9f7f0] text-[#137a53]',
+  neg: 'border-[#f6cbc7] bg-neg-bg text-neg',
+  mut: 'border-line bg-surface-2 text-ink-2',
+};
+
 function KminiTile({ label, value, unit = '', barColor, onTrend }) {
   return (
-    <div className="tile land-kmini" style={{ minWidth: 0 }}>
-      <span className="bar" style={{ background: barColor }} />
-      <div className="land-kmini-head">
-        <div className="k">{label}</div>
+    <div className="relative min-w-0 overflow-hidden rounded-[13px] border border-line bg-surface px-4 py-[15px]">
+      <span className="absolute inset-y-0 left-0 w-1" style={{ background: barColor }} aria-hidden />
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-ink-2">{label}</div>
         {onTrend ? (
           <button
             type="button"
-            className="trendbtn"
+            className="absolute top-1.5 right-1.5 flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-md border border-line bg-surface p-0 text-[11px] leading-none hover:border-[#f6e2b8] hover:bg-brand-050"
             title="Last 12 wk actual vs next 12 wk plan"
             onClick={(e) => {
               e.stopPropagation();
@@ -29,7 +44,7 @@ function KminiTile({ label, value, unit = '', barColor, onTrend }) {
           </button>
         ) : null}
       </div>
-      <div className="v mono land-kmini-val">
+      <div className="mt-1.5 font-mono text-lg font-bold tracking-tight text-ink">
         {f2(value)}
         {unit}
       </div>
@@ -37,64 +52,67 @@ function KminiTile({ label, value, unit = '', barColor, onTrend }) {
   );
 }
 
-function landingOuBars(plan) {
-  const past = (plan.sOU || []).map((v, i) => (i <= plan.curIdx ? v : null));
-  const future = (plan.sOU || []).map((v, i) => (i >= plan.curIdx ? v : null));
-  return [
-    {
-      tipLabel: 'Actual/plan',
-      data: past,
-      color: (v) => (v == null ? 'transparent' : v < 0 ? '#e0483f' : '#1a9e6a'),
-    },
-    {
-      tipLabel: 'Forecast',
-      data: future,
-      color: (v) => (v == null ? 'transparent' : v < 0 ? '#f3b0ab' : '#a9dcc6'),
-    },
-  ];
-}
-
 function PlanExpandDetail({ plan, onOpenDetail, recsByCap, gotBy }) {
   const rc = portfolioRecChip(plan, recsByCap, gotBy);
   const ouShrink = plan.ouShrink ?? plan.ou ?? 0;
-  const ouBars = useMemo(() => landingOuBars(plan), [plan]);
 
   return (
-    <div className="detail-inner">
-      <div className="grid g4 land-kmini-grid">
+    <div className="block w-full box-border border-b border-line bg-surface-2 px-[18px] py-4">
+      <div className="mb-3 grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-4">
         <KminiTile label="Shrinkage · 12wk" value={plan.shrink12} unit="%" barColor="#2a78d6" onTrend={() => {}} />
         <KminiTile label="Attrition · 12wk" value={plan.attr12} unit="%" barColor="#eb6834" onTrend={() => {}} />
         <KminiTile label="Hiring · 12wk" value={plan.hire12} unit="" barColor="#1a9e6a" onTrend={() => {}} />
-        <div className={`tile land-kmini ${ouShrink < 0 ? 'b-neg' : 'b-pos'}`} style={{ minWidth: 0 }}>
-          <span className="bar" />
-          <div className="k">O/U with shrinkage</div>
-          <div className={`v mono land-kmini-val ${ouShrink < 0 ? 'neg' : 'pos'}`}>{f2(ouShrink)}</div>
-          <div className="s">vs billable {f2(plan.ou)}</div>
+        <div className="relative min-w-0 overflow-hidden rounded-[13px] border border-line bg-surface px-4 py-[15px]">
+          <span
+            className={`absolute inset-y-0 left-0 w-1 ${ouShrink < 0 ? 'bg-neg' : 'bg-pos'}`}
+            aria-hidden
+          />
+          <div className="text-xs font-semibold text-ink-2">O/U with shrinkage</div>
+          <div className={`mt-1.5 font-mono text-lg font-bold tracking-tight ${ouShrink < 0 ? 'text-neg' : 'text-pos'}`}>
+            {f2(ouShrink)}
+          </div>
+          <div className="mt-0.5 text-[11.5px] text-ink-3">vs billable {f2(plan.ou)}</div>
         </div>
       </div>
-      <div className="slabel">FTE Over / Under — week on week (last 12 + next 12, this week marked)</div>
-      <div className="chartbox land-chartbox">
-        <SeriesChart
-          weeks={plan.weeks}
-          curIdx={plan.curIdx}
-          zeroLine
-          height={200}
-          valueUnit="FTE"
-          yFmt={f2}
-          thinBars={false}
-          barRatio={0.492}
-          barRadius={4}
-          flush
-          responsive
-          bars={ouBars}
-        />
+      <div className="mb-3 mt-0.5 text-xs font-bold uppercase tracking-wide text-ink-3">
+        FTE Over / Under — week on week (last 12 + next 12, this week marked)
       </div>
-      <div className="detail-foot">
-        <span className={`recchip ${rc.cls}`}>{rc.t}</span>
-        <button type="button" className="btn btn-primary" onClick={() => onOpenDetail(plan.capId)}>
+      <LandingOuChart plan={plan} />
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <span className={`inline-block rounded-lg border px-2.5 py-1.5 text-[12.5px] font-semibold leading-snug ${REC_CHIP[rc.cls] || REC_CHIP.mut}`}>
+          {rc.t}
+        </span>
+        <button
+          type="button"
+          className="inline-flex cursor-pointer items-center gap-2 rounded-[10px] bg-brand px-5 py-2.5 text-[13.5px] font-semibold text-white shadow-[0_2px_6px_rgba(245,166,35,0.32)] transition-colors hover:bg-brand-600"
+          onClick={() => onOpenDetail(plan.capId)}
+        >
           Open detailed analysis →
         </button>
       </div>
+    </div>
+  );
+}
+
+function StatPill({ ic, val, lab, tip, tone = '' }) {
+  const toneCls =
+    tone === 'neg'
+      ? 'text-neg [&_.cs-ic]:bg-neg-bg [&_.cs-ic]:text-neg'
+      : tone === 'pos'
+        ? 'text-pos [&_.cs-ic]:bg-[#e2f5ec] [&_.cs-ic]:text-pos'
+        : tone === 'warn'
+          ? 'text-warn [&_.cs-ic]:bg-warn-bg [&_.cs-ic]:text-warn'
+          : '';
+  return (
+    <div
+      className={`flex cursor-default items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 ${toneCls}`}
+      title={tip}
+    >
+      <span className="cs-ic flex h-[18px] w-[18px] items-center justify-center rounded-full bg-surface-2 text-[11px] font-extrabold text-ink-2">
+        {ic}
+      </span>
+      <span className="cs-v text-sm font-extrabold tabular-nums">{val}</span>
+      <span className="cs-l text-[11.5px] font-semibold text-ink-2">{lab}</span>
     </div>
   );
 }
@@ -108,43 +126,61 @@ function CompactSummary({ plans }) {
   const roster = plans.filter(rosterBad).length;
   const net = plans.reduce((a, p) => a + (p.ou || 0), 0);
 
-  const stat = (ic, val, lab, tip, cls = '') => (
-    <div className={`cstat ${cls}`} title={tip}>
-      <span className="cs-ic">{ic}</span>
-      <span className="cs-v">{val}</span>
-      <span className="cs-l">{lab}</span>
-    </div>
-  );
-
   return (
-    <div className="statstrip">
-      {stat('▦', plans.length, 'Active', 'Active plans in this portfolio')}
-      {stat('▾', under, 'Understaffed', 'Understaffed — under + critical', 'neg')}
-      {stat('▴', surplus, 'Surplus', 'Surplus (donors) — can lend capacity', 'pos')}
-      {stat('⚑', roster, 'Roster gaps', 'Classes not fully onboarded', 'warn')}
-      {stat('Σ', f2(net), 'Net O/U', 'Net FTE Over/Under across all plans', net < 0 ? 'neg' : 'pos')}
+    <div className="ml-auto flex flex-wrap items-center gap-2">
+      <StatPill ic="▦" val={plans.length} lab="Active" tip="Active plans in this portfolio" />
+      <StatPill ic="▾" val={under} lab="Understaffed" tip="Understaffed — under + critical" tone="neg" />
+      <StatPill ic="▴" val={surplus} lab="Surplus" tip="Surplus (donors) — can lend capacity" tone="pos" />
+      <StatPill ic="⚑" val={roster} lab="Roster gaps" tip="Classes not fully onboarded" tone="warn" />
+      <StatPill ic="Σ" val={f2(net)} lab="Net O/U" tip="Net FTE Over/Under across all plans" tone={net < 0 ? 'neg' : 'pos'} />
     </div>
   );
 }
 
 function WeekBar({ plan }) {
   const { cells, values, under, over } = weekBarData(plan);
+  const cellCls = { u: 'bg-neg', o: 'bg-pos', k: 'bg-[#d7dbe2]' };
   return (
-    <div className="wbwrap">
-      <div className="weekbar">
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-0.5">
         {cells.map((kind, i) => (
-          <span key={i} className={`wb ${kind}`} title={`${f2(values[i])} FTE`} />
+          <span
+            key={i}
+            className={`h-4 w-[11px] rounded-sm ${cellCls[kind] || 'bg-line'}`}
+            title={`${f2(values[i])} FTE`}
+          />
         ))}
       </div>
-      <div className="wblabel">
-        <span className="wl u">{under} under</span> · <span className="wl o">{over} over</span>
+      <div className="text-[11px] font-bold">
+        <span className="text-neg">{under} under</span>
+        {' · '}
+        <span className="text-pos">{over} over</span>
       </div>
     </div>
   );
 }
 
+function StChip({ status, children }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold ${ST_CHIP[status] || ST_CHIP.balanced}`}>
+      {children}
+    </span>
+  );
+}
+
+function RecChip({ cls, children }) {
+  return (
+    <span className={`inline-block rounded-lg border px-2.5 py-1.5 text-xs font-semibold leading-snug ${REC_CHIP[cls] || REC_CHIP.mut}`}>
+      {children}
+    </span>
+  );
+}
+
+const filterSelectCls =
+  'rounded-lg border border-line bg-surface px-2.5 py-2 text-[12.5px] font-semibold text-ink outline-none focus:border-brand focus:ring-2 focus:ring-brand-050';
+
 export default function PortfolioLanding({
-  plans = [],
+  allPlans = [],
   programs = [],
   filter = 'all',
   search = '',
@@ -160,26 +196,42 @@ export default function PortfolioLanding({
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [expandedPlans, setExpandedPlans] = useState(() => new Set());
+  const [facetOptions, setFacetOptions] = useState({ regions: [], verticals: [] });
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .portfolioFacets()
+      .then((res) => {
+        if (!cancelled && res) {
+          setFacetOptions({
+            regions: res.regions || [],
+            verticals: res.verticals || [],
+          });
+        }
+      })
+      .catch(() => {
+        /* fall back to plan-derived options */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [allPlans.length]);
+
+  const derivedOptions = useMemo(() => portfolioFilterOptions(allPlans), [allPlans]);
+  const regions = facetOptions.regions.length ? facetOptions.regions : derivedOptions.regions;
+  const verticals = facetOptions.verticals.length ? facetOptions.verticals : derivedOptions.verticals;
 
   const filtered = useMemo(() => {
-    let rows = plans;
-    if (region) rows = rows.filter((p) => p.region === region);
-    if (vertical) rows = rows.filter((p) => p.vertical === vertical);
-    if (statusFilter) rows = rows.filter((p) => statusOf(p) === statusFilter);
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
-      rows = rows.filter(
-        (p) =>
-          p.plan?.toLowerCase().includes(q) ||
-          p.capId?.toLowerCase().includes(q) ||
-          p.planner?.toLowerCase().includes(q) ||
-          p.site?.toLowerCase().includes(q) ||
-          p.program?.toLowerCase().includes(q),
-      );
-    }
-    if (filter !== 'all') rows = rows.filter((p) => p.program === filter);
+    const rows = filterPortfolioPlans(allPlans, {
+      query: search,
+      program: filter,
+      region,
+      vertical,
+      status: statusFilter,
+    });
     return [...rows].sort((a, b) => a.sustained - b.sustained);
-  }, [plans, filter, search, region, vertical, statusFilter]);
+  }, [allPlans, filter, search, region, vertical, statusFilter]);
 
   const groups = useMemo(() => {
     const map = {};
@@ -194,9 +246,6 @@ export default function PortfolioLanding({
     const rest = order.filter((n) => !prefer.includes(n));
     return [...prefer, ...rest].map((name) => ({ name, plans: map[name] }));
   }, [filtered, programs]);
-
-  const regions = useMemo(() => [...new Set(plans.map((p) => p.region).filter(Boolean))].sort(), [plans]);
-  const verticals = useMemo(() => [...new Set(plans.map((p) => p.vertical).filter(Boolean))].sort(), [plans]);
 
   const nPri = filtered.filter((p) => {
     const st = statusOf(p);
@@ -233,38 +282,46 @@ export default function PortfolioLanding({
     });
   };
 
+  const thCls =
+    'sticky top-0 z-[2] border-b border-line bg-surface px-3 py-2.5 text-right text-[10.5px] font-bold uppercase tracking-wide text-ink-3 whitespace-nowrap';
+
   return (
-    <div className="land-v4" data-view="port-landing">
-      <div className="land-bar">
-        <div className="land-title">
+    <div data-view="port-landing">
+      {/* Header + stat strip */}
+      <div className="mb-3 flex flex-wrap items-center gap-4">
+        <div className="text-[15px] font-bold tracking-tight text-ink">
           Portfolio — CAP plans by Program{' '}
-          <span className="land-sub">
+          <span className="text-xs font-medium text-ink-2">
             · grouped by Program, most deficit first
             {nPri ? (
               <>
                 {' '}
-                · <b style={{ color: 'var(--neg)' }}>{nPri} need attention</b>
+                · <b className="text-neg">{nPri} need attention</b>
               </>
             ) : null}
           </span>
         </div>
-        <CompactSummary plans={plans} />
+        <CompactSummary plans={filtered.length ? filtered : allPlans} />
       </div>
 
+      {/* Execute bar */}
       {queuedPackages.length ? (
-        <div className="execbar">
-          <div className="eb-l">
-            <span className="eb-ic">🚀</span>
-            <div className="eb-tx">
-              <b>
+        <div className="mb-3.5 flex flex-wrap items-center gap-4 rounded-[14px] bg-gradient-to-r from-[#20242c] to-[#2b2f36] px-[18px] py-3.5 shadow-sm">
+          <div className="flex min-w-[220px] flex-1 items-center gap-3.5">
+            <span className="shrink-0 text-[26px]">🚀</span>
+            <div className="text-[13.5px] leading-snug text-white">
+              <b className="font-bold">
                 {queuedPackages.length} approved action(s) across{' '}
                 {new Set(queuedPackages.map((p) => p.cap_id)).size} plan(s)
               </b>{' '}
               ready to execute in one go
               {execChips.length ? (
-                <div className="eb-chips">
+                <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {execChips.map((c) => (
-                    <span key={c.label} className="eb-chip">
+                    <span
+                      key={c.label}
+                      className="rounded-full border border-[rgba(245,166,35,0.35)] bg-[rgba(245,166,35,0.16)] px-2.5 py-0.5 text-[11px] font-bold text-[#f3d9a6]"
+                    >
                       {c.ic} {c.n} {c.label}
                     </span>
                   ))}
@@ -272,14 +329,19 @@ export default function PortfolioLanding({
               ) : null}
             </div>
           </div>
-          <button type="button" className="btn btn-dark eb-btn" onClick={onExecPortfolio}>
+          <button
+            type="button"
+            className="shrink-0 cursor-pointer rounded-[10px] bg-header px-5 py-2.5 text-[13.5px] font-semibold text-white transition-colors hover:bg-[#1c1f24]"
+            onClick={onExecPortfolio}
+          >
             Review &amp; execute all →
           </button>
         </div>
       ) : null}
 
-      <div className="filters">
-        <select value={region} onChange={(e) => onFilterChange?.({ region: e.target.value })}>
+      {/* Filters */}
+      <div className="mb-3.5 flex flex-wrap items-center gap-2">
+        <select className={filterSelectCls} value={region} onChange={(e) => onFilterChange?.({ region: e.target.value })}>
           <option value="">All regions</option>
           {regions.map((r) => (
             <option key={r} value={r}>
@@ -287,7 +349,7 @@ export default function PortfolioLanding({
             </option>
           ))}
         </select>
-        <select value={vertical} onChange={(e) => onFilterChange?.({ vertical: e.target.value })}>
+        <select className={filterSelectCls} value={vertical} onChange={(e) => onFilterChange?.({ vertical: e.target.value })}>
           <option value="">All verticals</option>
           {verticals.map((v) => (
             <option key={v} value={v}>
@@ -295,7 +357,7 @@ export default function PortfolioLanding({
             </option>
           ))}
         </select>
-        <select value={statusFilter} onChange={(e) => onFilterChange?.({ status: e.target.value })}>
+        <select className={filterSelectCls} value={statusFilter} onChange={(e) => onFilterChange?.({ status: e.target.value })}>
           <option value="">All statuses</option>
           <option value="critical">Critical</option>
           <option value="under">Understaffed</option>
@@ -303,25 +365,27 @@ export default function PortfolioLanding({
           <option value="surplus">Surplus</option>
         </select>
         <input
+          className={`${filterSelectCls} min-w-[150px] font-medium`}
           placeholder="Search plan / planner / site…"
           value={search}
           onChange={(e) => onFilterChange?.({ search: e.target.value })}
         />
-        <span className="fx">
-          Showing {filtered.length} of {plans.length}
+        <span className="ml-auto whitespace-nowrap text-xs font-semibold text-ink-3">
+          Showing {filtered.length} of {allPlans.length}
         </span>
       </div>
 
-      <div className="card in land-table-card">
-        <table className="ptable">
+      {/* Table */}
+      <div className="overflow-visible rounded-[13px] border border-line bg-surface p-0 shadow-sm">
+        <table className="w-full border-separate border-spacing-0 text-[13px]">
           <thead>
             <tr>
-              <th style={{ textAlign: 'left' }}>CAP Plan</th>
-              <th>Avg FTE O/U · 12wk</th>
-              <th>Next 12 wks (▮ under / ▮ over)</th>
-              <th>Status</th>
-              <th style={{ textAlign: 'left' }}>Recommendation</th>
-              <th />
+              <th className={`${thCls} text-left`}>CAP Plan</th>
+              <th className={thCls}>Avg FTE O/U · 12wk</th>
+              <th className={thCls}>Next 12 wks (▮ under / ▮ over)</th>
+              <th className={thCls}>Status</th>
+              <th className={`${thCls} text-left`}>Recommendation</th>
+              <th className={thCls} />
             </tr>
           </thead>
           <tbody>
@@ -334,20 +398,27 @@ export default function PortfolioLanding({
               const netg = g.plans.reduce((a, p) => a + (p.sustained || 0), 0);
               return (
                 <Fragment key={g.name}>
-                  <tr className={`grouphdr ${col ? 'col' : ''}`} onClick={() => toggleGroup(g.name)}>
-                    <td colSpan={6}>
-                      <span className="gh-caret">▶</span>
-                      <span className="gh-name">{g.name}</span>
-                      <span className="gh-meta">
+                  <tr className="cursor-pointer" onClick={() => toggleGroup(g.name)}>
+                    <td
+                      colSpan={6}
+                      className="border-b border-t border-line bg-surface-2 px-3.5 py-2.5 text-left hover:bg-[#f1ede4]"
+                    >
+                      <span
+                        className={`mr-2 inline-block text-[10px] text-brand-600 transition-transform ${col ? '' : 'rotate-90'}`}
+                      >
+                        ▶
+                      </span>
+                      <span className="text-[13.5px] font-extrabold tracking-tight text-ink">{g.name}</span>
+                      <span className="ml-3 text-[11.5px] font-semibold text-ink-3">
                         {g.plans.length} plan{g.plans.length === 1 ? '' : 's'}
                         {under ? (
                           <>
                             {' '}
-                            · <b className="neg">{under} need attention</b>
+                            · <b className="text-neg">{under} need attention</b>
                           </>
                         ) : null}{' '}
                         · net 12-wk O/U{' '}
-                        <b className={netg < 0 ? 'neg' : 'pos'}>
+                        <b className={netg < 0 ? 'text-neg' : 'text-pos'}>
                           {netg >= 0 ? '+' : ''}
                           {f2(netg)}
                         </b>
@@ -362,33 +433,46 @@ export default function PortfolioLanding({
                         const subcrumb = [p.lob, p.subLob, p.site || p.country].filter(Boolean).join(' › ');
                         return (
                           <Fragment key={p.capId}>
-                            <tr className={`prow gchild ${ex ? 'exp' : ''}`} onClick={() => togglePlan(p.capId)}>
-                              <td>
-                                <div className={`pname ${ex ? 'exp' : ''}`}>
-                                  <span className="caret">▶</span>
-                                  <span className="capchip">{p.capId}</span>
+                            <tr
+                              className={`cursor-pointer ${ex ? 'bg-brand-050 [&>td]:border-b-transparent' : 'bg-surface hover:bg-surface-2'}`}
+                              onClick={() => togglePlan(p.capId)}
+                            >
+                              <td className="border-b border-line-2 px-3 py-[11px] pl-[26px] text-left">
+                                <div className="flex flex-wrap items-center gap-1.5 font-bold text-ink">
+                                  <span className={`text-[11px] text-ink-3 transition-transform ${ex ? 'rotate-90' : ''}`}>
+                                    ▶
+                                  </span>
+                                  <span className="rounded-[5px] border border-[#f6e2b8] bg-brand-050 px-1.5 py-px font-mono text-[10.5px] font-bold tracking-wide text-brand-600">
+                                    {p.capId}
+                                  </span>
                                   <span>{p.plan}</span>
-                                  {rosterBad(p) ? <span className="rflag">⚑ roster</span> : null}
+                                  {rosterBad(p) ? (
+                                    <span className="inline-flex items-center gap-1 rounded-xl bg-neg-bg px-1.5 py-0.5 text-[10.5px] font-bold text-neg">
+                                      ⚑ roster
+                                    </span>
+                                  ) : null}
                                 </div>
-                                <div className="pmeta">{subcrumb}</div>
+                                <div className="mt-px text-[11px] font-medium text-ink-3">{subcrumb}</div>
                               </td>
-                              <td className={`mono ${p.sustained < 0 ? 'neg' : 'pos'}`} style={{ fontWeight: 800 }}>
+                              <td
+                                className={`border-b border-line-2 px-3 py-[11px] text-right font-mono text-[13px] font-extrabold tabular-nums ${p.sustained < 0 ? 'text-neg' : 'text-pos'}`}
+                              >
                                 {p.sustained >= 0 ? '+' : ''}
                                 {f2(p.sustained)}
                               </td>
-                              <td>
+                              <td className="border-b border-line-2 px-3 py-[11px] text-right tabular-nums">
                                 <WeekBar plan={p} />
                               </td>
-                              <td>
-                                <span className={`stchip ${st}`}>{STATUS_LABELS[st] || st}</span>
+                              <td className="border-b border-line-2 px-3 py-[11px] text-right">
+                                <StChip status={st}>{STATUS_LABELS[st] || st}</StChip>
                               </td>
-                              <td style={{ textAlign: 'left' }}>
-                                <span className={`recchip ${rc.cls}`}>{rc.t}</span>
+                              <td className="border-b border-line-2 px-3 py-[11px] text-left">
+                                <RecChip cls={rc.cls}>{rc.t}</RecChip>
                               </td>
-                              <td style={{ textAlign: 'right' }}>
+                              <td className="border-b border-line-2 px-3 py-[11px] text-right">
                                 <button
                                   type="button"
-                                  className="openbtn"
+                                  className="cursor-pointer whitespace-nowrap rounded-lg border border-brand bg-brand-050 px-3 py-1.5 text-[12.5px] font-bold text-brand-600 hover:bg-[#fdeecb]"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     onOpenPlan?.(p.capId);
@@ -399,8 +483,8 @@ export default function PortfolioLanding({
                               </td>
                             </tr>
                             {ex ? (
-                              <tr className="detail">
-                                <td colSpan={6}>
+                              <tr className="table-row">
+                                <td colSpan={6} className="table-cell w-full bg-surface-2 p-0 align-top">
                                   <PlanExpandDetail
                                     plan={p}
                                     onOpenDetail={onOpenPlan}
@@ -422,9 +506,11 @@ export default function PortfolioLanding({
       </div>
 
       {!groups.length ? (
-        <div className="insight info" style={{ marginTop: 12 }}>
-          <div className="ico">i</div>
-          <div className="tx">
+        <div className="mt-3 flex items-start gap-3 rounded-[11px] border border-[#c5ddf7] bg-info-bg px-4 py-3">
+          <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-md bg-info text-sm font-extrabold text-white">
+            i
+          </div>
+          <div className="text-[13px] text-ink">
             <b>No plans match</b> — try clearing search or changing filters
           </div>
         </div>

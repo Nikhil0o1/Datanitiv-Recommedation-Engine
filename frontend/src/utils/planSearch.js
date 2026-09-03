@@ -1,5 +1,7 @@
 /** Shared portfolio search — matches plan rows, triage items, and queue packages. */
 
+import { statusOf } from './planLogic';
+
 export function normalizeSearchQuery(query) {
   return (query || '').trim().toLowerCase();
 }
@@ -17,6 +19,8 @@ export function planSearchFields(item) {
     item.planner,
     item.region,
     item.vertical,
+    item.subLob,
+    item.country,
     item.why,
     item.description,
     item.tag,
@@ -48,10 +52,40 @@ export function searchScore(item, query) {
 }
 
 export function filterPlans(plans, { query, program = 'all' } = {}) {
-  return (plans || []).filter((p) => {
-    if (program && program !== 'all' && p.program !== program) return false;
-    return matchesPlanSearch(p, query);
-  });
+  return filterPortfolioPlans(plans, { query, program });
+}
+
+/** Portfolio landing filters — region, vertical, staffing status, program, search. */
+export function filterPortfolioPlans(
+  plans,
+  { query = '', program = 'all', region = '', vertical = '', status = '' } = {},
+) {
+  let rows = plans || [];
+  if (program && program !== 'all') {
+    rows = rows.filter((p) => p.program === program);
+  }
+  if (region) {
+    const r = region.toLowerCase();
+    rows = rows.filter((p) => String(p.region || '').toLowerCase() === r);
+  }
+  if (vertical) {
+    const v = vertical.toLowerCase();
+    rows = rows.filter((p) => String(p.vertical || '').toLowerCase() === v);
+  }
+  if (status) {
+    rows = rows.filter((p) => statusOf(p) === status);
+  }
+  const q = normalizeSearchQuery(query);
+  if (q) {
+    rows = rows.filter((p) => matchesPlanSearch(p, q));
+  }
+  return rows;
+}
+
+export function portfolioFilterOptions(plans) {
+  const regions = [...new Set((plans || []).map((p) => p.region).filter(Boolean))].sort();
+  const verticals = [...new Set((plans || []).map((p) => p.vertical).filter(Boolean))].sort();
+  return { regions, verticals };
 }
 
 export function searchPlans(plans, query, { program = 'all', limit = 8 } = {}) {

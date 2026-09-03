@@ -182,6 +182,7 @@ export const api = {
     return finalPayload;
   },
   portfolioAnalysis: () => request('/api/portfolio/analysis'),
+  portfolioFacets: () => request('/api/portfolio/facets'),
   agentStatus: () => request('/api/agent/status'),
   costSummary: () => request('/api/cost/summary'),
   costAnalytics: (range = '24h', groupBy = 'none') =>

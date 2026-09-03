@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { BreakdownPanel, LineChart } from '../components/AnalyticsChart';
-import '../styles/cost.css';
 
 const RANGES = ['1H', '6H', '24H', '7D', '30D', '90D'];
 const TABS = ['Usage', 'Cost', 'Latency', 'Errors', 'Models'];
