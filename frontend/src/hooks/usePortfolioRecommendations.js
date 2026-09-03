@@ -47,6 +47,7 @@ export function usePortfolioRecommendations({ enabled = true, capIds = [] } = {}
   const [byCap, setByCap] = useState({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [ready, setReady] = useState(false);
   const activeRef = useRef(false);
   const capSet = useMemo(() => new Set(capIds), [capIds.join('|')]);
 
@@ -85,6 +86,7 @@ export function usePortfolioRecommendations({ enabled = true, capIds = [] } = {}
       setError(err?.message || 'Recommendations unavailable');
     } finally {
       setLoading(false);
+      setReady(true);
       activeRef.current = false;
     }
   }, [enabled, capSet]);
@@ -99,5 +101,5 @@ export function usePortfolioRecommendations({ enabled = true, capIds = [] } = {}
     };
   }, [enabled, refresh]);
 
-  return { byCap, loading, error, refresh };
+  return { byCap, loading, error, ready, refresh };
 }

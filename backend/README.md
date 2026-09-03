@@ -39,7 +39,7 @@ Edit `.env` and set your keys. **Do not commit `.env` or real API keys.**
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL async URL, e.g. `postgresql+asyncpg://postgres:PASSWORD@localhost:5432/capability` |
+| `DATABASE_URL` | PostgreSQL async URL, e.g. `postgresql+asyncpg://postgres:PASSWORD@localhost:5432/cape_v2` |
 | `ANTHROPIC_API_KEY` | Claude API key for `/api/agent/chat` |
 | `ELEVENLABS_API_KEY` | ElevenLabs key for `/api/voice/stt` and `/api/voice/tts` |
 | `CORS_ORIGINS` | Comma-separated frontend origins |
@@ -47,8 +47,16 @@ Edit `.env` and set your keys. **Do not commit `.env` or real API keys.**
 ### 3. Create database
 
 ```sql
-CREATE DATABASE capability;
+CREATE DATABASE cape_v2;
 ```
+
+For the full Cape production dump (`cape-pg-data.sql` from SharePoint), run:
+
+```powershell
+python scripts\import_cape_dump.py --recreate
+```
+
+This creates `cape_v2` on a D: drive tablespace (when available), applies `pgboss` schema, streams the dump, and updates `DATABASE_URL` in `.env`.
 
 ### 4. Apply Cape schema migration
 

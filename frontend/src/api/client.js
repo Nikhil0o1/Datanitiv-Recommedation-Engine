@@ -53,23 +53,39 @@ async function request(path, options = {}) {
   return res;
 }
 
+/** Coalesce duplicate in-flight GETs (React StrictMode double-mount in dev). */
+const inflightGet = new Map();
+
+function dedupeGet(key, fn) {
+  const existing = inflightGet.get(key);
+  if (existing) return existing;
+  const promise = fn().finally(() => {
+    if (inflightGet.get(key) === promise) inflightGet.delete(key);
+  });
+  inflightGet.set(key, promise);
+  return promise;
+}
+
 export const api = {
   health: () => request('/api/health'),
-  cycle: () => request('/api/cycle/current'),
-  plans: (program) => request(`/api/plans${program ? `?program=${encodeURIComponent(program)}` : ''}`),
+  cycle: () => dedupeGet('cycle', () => request('/api/cycle/current')),
+  plans: (program) =>
+    dedupeGet(`plans:${program || ''}`, () =>
+      request(`/api/plans${program ? `?program=${encodeURIComponent(program)}` : ''}`),
+    ),
   plan: (capId) => request(`/api/plans/${capId}`),
   createPlan: (body) =>
     request('/api/plans', { method: 'POST', body: JSON.stringify(body) }),
-  triage: () => request('/api/triage'),
-  programs: () => request('/api/programs'),
-  queue: () => request('/api/queue/packages'),
+  triage: () => dedupeGet('triage', () => request('/api/triage')),
+  programs: () => dedupeGet('programs', () => request('/api/programs')),
+  queue: () => dedupeGet('queue', () => request('/api/queue/packages')),
   patchPackage: (id, body) => request(`/api/queue/packages/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   upsertPackage: (body) =>
     request('/api/queue/packages/upsert', { method: 'POST', body: JSON.stringify(body) }),
   executeQueue: (ids) =>
     request('/api/queue/execute', { method: 'POST', body: JSON.stringify({ package_ids: ids }) }),
-  ledger: () => request('/api/ledger'),
-  memories: () => request('/api/memories'),
+  ledger: () => dedupeGet('ledger', () => request('/api/ledger')),
+  memories: () => dedupeGet('memories', () => request('/api/memories')),
   submitShrinkage: (capId, weeks) =>
     request(`/api/plans/${capId}/shrinkage`, { method: 'POST', body: JSON.stringify({ weeks }) }),
   submitAttrition: (capId, weeks) =>

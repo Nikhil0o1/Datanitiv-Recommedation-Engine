@@ -1,6 +1,7 @@
 import { f2 } from './format';
 
 export const WELCOME_SESSION_KEY = 'concierge.welcomeShown';
+export const RED_REC_SESSION_KEY = 'concierge.redRecsShown';
 
 /** Short label from "Week of Aug 02, 2026" → "Aug 02". */
 export function cycleShort(cycleLabel) {

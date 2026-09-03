@@ -93,10 +93,8 @@ export function emitError(eventType, error, extra = {}) {
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
     if (queue.length) {
-      navigator.sendBeacon(
-        '/api/concierge/events',
-        JSON.stringify({ events: queue }),
-      );
+      const blob = new Blob([JSON.stringify({ events: queue })], { type: 'application/json' });
+      navigator.sendBeacon('/api/concierge/events', blob);
     }
   });
 
