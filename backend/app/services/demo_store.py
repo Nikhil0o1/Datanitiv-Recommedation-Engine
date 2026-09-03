@@ -2,6 +2,7 @@ import json
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AppSetting
@@ -14,7 +15,11 @@ DEMO_PLAN_META = "demo.plan_meta"
 
 
 async def get_json_setting(session: AsyncSession, key: str, default: Any) -> Any:
-    result = await session.execute(select(AppSetting).where(AppSetting.option_key == key))
+    try:
+        result = await session.execute(select(AppSetting).where(AppSetting.option_key == key))
+    except (ProgrammingError, DBAPIError):
+        await session.rollback()
+        return default
     row = result.scalar_one_or_none()
     if not row:
         return default

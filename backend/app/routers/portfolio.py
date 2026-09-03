@@ -41,21 +41,7 @@ async def refresh_analysis(session: AsyncSession = Depends(get_db)):
 @router.get("/facets")
 async def portfolio_facets(session: AsyncSession = Depends(get_db)):
     """Distinct region / vertical values for portfolio filter dropdowns."""
-    from app.services.plan_repository import load_all_plans
+    from app.services.plan_repository import portfolio_filter_facets
 
-    plans = await load_all_plans(session)
-    regions = sorted(
-        {
-            (p.hierarchy.region_name or p.meta.get("region") or "").strip()
-            for p in plans
-        }
-        - {""},
-    )
-    verticals = sorted(
-        {
-            (p.hierarchy.vertical_name or p.meta.get("vertical") or p.hierarchy.business_entity_name or "").strip()
-            for p in plans
-        }
-        - {""},
-    )
+    regions, verticals = await portfolio_filter_facets(session)
     return {"regions": regions, "verticals": verticals}

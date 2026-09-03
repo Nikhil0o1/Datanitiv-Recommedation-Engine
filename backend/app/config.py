@@ -68,7 +68,9 @@ def database_connect_args(url: str) -> dict:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/capability"
+    database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/cape_v2"
+    # When false, startup never seeds prototype.html demo data (use for cape_v2 production dumps).
+    auto_seed: bool = True
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-4-6"
     # USD per million tokens — override to match Anthropic Console pricing for your model

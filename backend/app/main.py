@@ -43,9 +43,17 @@ async def lifespan(app: FastAPI):
 
     async with AsyncSessionLocal() as session:
         existing = (await session.execute(select(OneviewHierarchy).limit(1))).scalar_one_or_none()
-        if not existing:
+        if settings.auto_seed and not existing:
             await seed_database(session)
-        await analyze_portfolio(session)
+
+    async def _warm_portfolio_cache() -> None:
+        try:
+            async with AsyncSessionLocal() as session:
+                await analyze_portfolio(session)
+        except Exception:
+            pass
+
+    asyncio.create_task(_warm_portfolio_cache())
 
     if settings.concierge_enabled and settings.concierge_worker_enabled:
         await start_worker()

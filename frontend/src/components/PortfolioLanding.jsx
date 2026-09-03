@@ -191,6 +191,7 @@ export default function PortfolioLanding({
   recsByCap = {},
   packages = [],
   onOpenPlan,
+  onEnsurePlanDetail,
   onExecPortfolio,
   onFilterChange,
   gotBy = {},
@@ -318,8 +319,13 @@ export default function PortfolioLanding({
   const togglePlan = (capId) => {
     setExpandedPlans((prev) => {
       const next = new Set(prev);
-      if (next.has(capId)) next.delete(capId);
-      else next.add(capId);
+      const opening = !next.has(capId);
+      if (opening) {
+        next.add(capId);
+        onEnsurePlanDetail?.(capId);
+      } else {
+        next.delete(capId);
+      }
       return next;
     });
   };
